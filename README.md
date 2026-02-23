@@ -1,387 +1,281 @@
-# 📚 Pré-traitement Documentaire Intelligent
+# doc2md — Convertisseur de documents vers Markdown
 
-Système de pré-traitement de ressources documentaires avec transcription intelligente pour améliorer l'assimilation par les modèles de langage (LLM).
+Outil de conversion **PDF / DOCX / PPTX → Markdown** via un modèle de vision local (Ollama).
 
-## 🎯 Objectifs
-
-Ce projet permet de convertir des documents (PDF, DOCX) en Markdown structuré avec :
-- **Fidélité absolue** : Préservation intégrale du texte source, mot pour mot (mode strict)
-- **Extraction intelligente** : Préservation de la hiérarchie (titres, sections, listes, tableaux)
-- **Analyse d'images** : Détection automatique de la pertinence des schémas, graphiques et images
-- **Transcription factuelle** : Description textuelle détaillée uniquement de ce qui est visible
-- **Filtrage intelligent** : Élimination des éléments décoratifs et des templates
-- **Aucune invention** : Pas de reformulation, synthèse ou interprétation du contenu
-- **Optimisé pour RAG** : Markdown pur compatible avec tous les systèmes de chunking (Delibia, etc.)
-
-## 🏗️ Architecture
-
-### Modules principaux
-
-```
-├── main.py                   # Orchestrateur principal
-├── config.py                 # Configuration centralisée
-├── document_extractor.py     # Extraction de contenu (PDF/DOCX)
-├── image_analyzer.py         # Analyse intelligente d'images
-├── markdown_processor.py     # Génération de Markdown enrichi
-└── notes_generator.py        # Conversion de notes brutes (ancien système)
-```
-
-### Pipeline de traitement
-
-```
-Document (PDF/DOCX)
-    ↓
-1. Extraction (document_extractor.py)
-    ├── Texte structuré (titres, paragraphes, tables)
-    └── Images + contexte textuel
-    ↓
-2. Analyse d'images (image_analyzer.py)
-    ├── Classification (schéma, graphique, photo, décoratif)
-    ├── Évaluation de pertinence
-    └── Génération de description textuelle
-    ↓
-3. Génération Markdown (markdown_processor.py)
-    ├── Structure hiérarchique préservée
-    ├── Descriptions d'images intégrées
-    └── Enrichissement via LLM
-    ↓
-Markdown enrichi (.md)
-```
-
-## 📋 Prérequis
-
-### 1. Installation d'Ollama
-
-Ollama doit être installé et en cours d'exécution :
-
-**Windows:**
-```powershell
-# Télécharger depuis https://ollama.ai/download
-# Ou via winget:
-winget install Ollama.Ollama
-```
-
-**Linux/Mac:**
-```bash
-curl -fsSL https://ollama.ai/install.sh | sh
-```
-
-### 2. Téléchargement des modèles
-
-```bash
-# Modèle de texte (obligatoire)
-ollama pull ministral3:14b
-
-# Modèle de vision pour l'analyse d'images (recommandé)
-ollama pull llava:13b
-
-# Alternatives pour le modèle de vision:
-# ollama pull llava:34b      # Plus précis mais plus lent
-# ollama pull bakllava       # Version optimisée
-```
-
-### 3. Dépendances Python
-
-```bash
-python -m venv .venv
-.venv/Scripts/Activate
-
-pip install -r requirements.txt
-```
-
-## 🚀 Utilisation
-
-### Mode recommandé : STRICT (pour Delibia et RAG)
-
-Garantie de fidélité absolue, aucune reformulation, aucune invention.
-
-```bash(mode strict recommandé)** :
-```bash
-python main.py doc_to_markdown 4 --strict
-```
-
-**Paramètres** :
-- `4` : Nombre de threads (traitement parallèle)
-- `--strict` : Mode fidélité absolue (recommandé pour Delibia)
-- ✅ Correction syntaxe Markdown seulement (# pour titres, - pour listes, | | pour tableaux)
-- ❌ Aucune reformulation, aucune interprétation, aucun ajout
-
-**Temps** : ~1-2 minutes pour 20 pages + 5 images
+Pour les PDF et PPTX, chaque **page entière** est analysée visuellement par le modèle :
+tableaux, schémas avec flèches, organigrammes, mises en page multi-colonnes sont
+retranscrits fidèlement en Markdown structuré. Les éléments décoratifs (logos, photos)
+sont ignorés. Pour les DOCX, la structure native (styles Word, tableaux) est utilisée.
 
 ---
 
-### Mode 1: Traitement de documents enrichis (NOUVEAU)
+## Prérequis
 
-Convertit des PDF/DOCX en Markdown avec analyse d'images.
+| Outil | Version minimale | Vérification |
+|---|---|---|
+| Python | 3.10+ | `python --version` |
+| [Ollama](https://ollama.com) | 0.16+ | `ollama --version` |
+| Modèle de vision | `qwen2.5vl:latest` | `ollama list` |
+| [LibreOffice](https://www.libreoffice.org/download/) *(optionnel)* | 7.0+ | `soffice --version` |
 
-**Utilisation basique :**
-```bash
-python main.py doc_to_markdown 4
-```
+> **Note Windows** : les commandes ci-dessous utilisent Git Bash (syntaxe Unix).
+> Dans un terminal CMD ou PowerShell, `venv/Scripts/python.exe` reste identique.
 
-**Paramètres :**
-- `4` : Nombre de threads (traitement parallèle)
+> **LibreOffice** est nécessaire pour la conversion de qualité des fichiers PPTX
+> (rendu visuel complet des diapositives). Sans lui, les slides sont traités shape
+> par shape — les éléments vectoriels (flèches, connecteurs de schémas) ne sont pas capturés.
 
-**Options avancées :**
-```bash
-python main.py doc_to_markdown <threads> [options]
+---
 
-Options:
-  --text-model <model>      Modèle de texte (défaut: ministral3:14b)
-  --vision-model <model>    Modèle de vision (défaut: llava:13b)
-  --input <folder>          Dossier d'entrée (défaut: docs-bruts)
-  --output <folder>         Dossier de sortie (défaut: docs-traites)
-  --no-images               Désactiver l'analyse d'images
-  --strict                  Mode STRICT : fidélité absolue, aucune reformulation (RECOMMANDÉ pour Delibia)
-  --no-enrich               Désactiver l'enrichissement LLM (pipeline original)
-```
+## Installation
 
-**Exemples :**
+### 1. Installer Ollama et le modèle de vision
 
-``Recommandé pour Delibia : mode strict, fidélité absolue
-python main.py doc_to_markdown 4 --strict
-
-# Mode strict avec modèle vision plus puissant
-python main.py doc_to_markdown 2 --strict --vision-model llava:34b
-
-# Sans analyse d'images (plus rapide, documents textuels)
-python main.py doc_to_markdown 4 --strict --no-images
-
-# Mode standard (peut améliorer légèrement la structure)
-python main.py doc_to_markdown 4
-python main.py doc_to_markdown 2 --text-model ministral3:14b --vision-model llava:34b
-
-# Dossiers personnalisés
-python main.py doc_to_markdown 2 --input mes-docs --output exports-md
-
-# Sans analyse d'images (plus rapide)
-python main.py doc_to_markdown 4 --no-images
-
-# Pipeline original strict (sans enrichissement LLM)
-python main.py doc_to_markdown 4 --no-enrich
-
-# Markdown pur pour Delibia (extraction + analyse images uniquement)
-python main.py doc_to_markdown 4 --no-enrich
-```
-
-### Mode 2: Conversion de notes brutes (ANCIEN)
-
-Convertit des fichiers `.raw.txt` en notes structurées.
+Téléchargez Ollama sur [ollama.com](https://ollama.com), installez-le, puis
+téléchargez le modèle recommandé :
 
 ```bash
-python main.py raw_to_notes <threads> <model> <folder>
+ollama pull qwen2.5vl
 ```
 
-**Exemple :**
+> Le téléchargement pèse environ 6 Go. N'utilisez **pas** les modèles `llava`
+> ni `minicpm-v` : ils sont incompatibles avec Ollama 0.16+ (sorties corrompues).
+
+### 2. (Recommandé) Installer LibreOffice
+
+Pour une conversion PPTX de qualité, installez LibreOffice :
+[libreoffice.org/download](https://www.libreoffice.org/download/)
+
+L'outil le détecte automatiquement — aucune configuration supplémentaire.
+
+### 3. Créer l'environnement virtuel Python
+
+Depuis le répertoire du projet :
+
 ```bash
-python main.py raw_to_notes 4 ministral3:14b docs-bruts
+# Linux / macOS / Git Bash (Windows)
+bash setup_env.sh
+
+# Ou manuellement :
+python -m venv venv
+venv/Scripts/python.exe -m pip install --upgrade pip
+venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-## ⚙️ Configuration
+### 4. Vérifier l'installation
 
-Modifiez [config.py](config.py) pour personnaliser :
-
-```python
-# Modèles
-TEXT_MODEL = "ministral3:14b"
-VISION_MODEL = "llava:13b"
-
-# Seuil de pertinence des images (0.0 à 1.0)
-RELEVANCE_THRESHOLD = 0.6
-
-# Taille minimale des images à traiter (évite les icônes)
-MIN_IMAGE_SIZE = (100, 100)
-
-# Dossiers
-INPUT_FOLDER = "docs-bruts"
-OUTPUT_FOLDER = "docs-traites"
+```bash
+venv/Scripts/python.exe convert.py --list-models
 ```
 
-## 📊 Formats supportés
+Vous devriez voir `qwen2.5vl:latest [vision]` dans la liste.
 
-| Format | Extension | Extraction texte | Extraction images | Statut |
-|--------|-----------|------------------|-------------------|--------|
-| PDF | `.pdf` | ✅ Complet | ✅ Complet | ✅ Stable |
-| Word | `.docx` | ✅ Complet | ✅ Complet | ✅ Stable |
-| Word ancien | `.doc` | ⚠️ Partiel | ⚠️ Partiel | ⚠️ Expérimental |
-| PowerPoint | `.pptx` | 🔄 À venir | 🔄 À venir | 🔄 En développement |
+---
 
-## 🔍 Analyse d'images
+## Utilisation
 
-Le système analyse automatiquement chaque image pour :
+### Démarrer Ollama (si ce n'est pas déjà fait)
 
-### 1. Classification
-- **Schéma technique** : Diagrammes, architectures, flowcharts
-- **Graphique** : Charts, histogrammes, courbes
-- **Capture d'écran** : Screenshots d'interface
-- **Photo** : Photographies
-- **Logo/Décoratif** : Éléments non pertinents
+```bash
+ollama serve
+```
 
-### 2. Évaluation de pertinence
-Score de confiance (0.0 à 1.0) basé sur :
-- Complexité visuelle
-- Présence de texte technique
-- Contexte textuel environnant
-- Taille et qualité
+Laissez ce terminal ouvert pendant toute la durée des conversions.
 
-### 3. Transcription
-Pour les images pertinentes :
-- Description textuelle détaillée
-- Extraction du texte visible (OCR)
-- Explication du schéma/graphique
+---
 
-**Exemple de sortie :**
+### Convertir un fichier unique
+
+```bash
+# PDF → Markdown (avec analyse visuelle, par défaut)
+venv/Scripts/python.exe convert.py doc-raw/monDocument.pdf
+
+# DOCX → Markdown avec sortie explicite
+venv/Scripts/python.exe convert.py doc-raw/rapport.docx -o doc-md/rapport.md
+
+# PPTX → Markdown sans modèle de vision (extraction texte rapide)
+venv/Scripts/python.exe convert.py doc-raw/presentation.pptx --no-images
+```
+
+Le fichier Markdown est créé dans **`doc-md/`** par défaut
+(même nom que la source, extension `.md`).
+
+---
+
+### Convertir un dossier entier
+
+```bash
+# Convertit tous les PDF/DOCX/PPTX du dossier doc-raw/
+venv/Scripts/python.exe convert.py doc-raw/
+
+# Avec dossier de sortie explicite
+venv/Scripts/python.exe convert.py doc-raw/ -o doc-md/
+
+# Sans modèle de vision (test rapide, texte uniquement)
+venv/Scripts/python.exe convert.py doc-raw/ --no-images
+```
+
+---
+
+### Toutes les options
+
+```
+python convert.py <fichier_ou_dossier> [options]
+
+Arguments :
+  fichier_ou_dossier    Chemin vers un fichier PDF/DOCX/PPTX, ou un dossier
+
+Options :
+  -o, --output CHEMIN   Fichier .md de sortie (mode fichier) ou dossier (mode dossier)
+  --vision-model NOM    Modèle Ollama de vision (défaut : qwen2.5vl:latest)
+  --no-images           Désactiver le modèle de vision (extraction texte rapide)
+  --list-models         Afficher les modèles Ollama disponibles et quitter
+  -q, --quiet           Mode silencieux (pas de messages de progression)
+  -h, --help            Afficher l'aide
+```
+
+---
+
+## Comment ça fonctionne
+
+### PDF (mode vision)
+
+Chaque page est rendue en image (150 DPI) et envoyée à `qwen2.5vl`.
+Le modèle produit un Markdown structuré en voyant le contexte visuel complet :
+
+- **Tableaux** → reproduits en GFM (`| col | col |`)
+- **Schémas de processus / flowcharts** → description des étapes, flèches et relations
+- **Organigrammes** → hiérarchie complète avec rôles et liens
+- **Mises en page multi-colonnes** → colonne gauche lue en entier, puis colonne droite
+- **Illustrations / exemples** → mentionnés brièvement sans analyser le décoratif
+
+### PPTX (mode vision)
+
+1. Conversion de la présentation en PDF via **LibreOffice** (si installé)
+2. Traitement page par page identique au pipeline PDF ci-dessus
+
+Sans LibreOffice : extraction shape par shape dans l'ordre visuel.
+Les éléments vectoriels (flèches, formes, connecteurs) ne sont pas capturés dans ce mode.
+
+### DOCX
+
+Structure native utilisée directement (styles Word, paragraphes, tableaux GFM).
+Pas de rendu visuel nécessaire — qualité optimale sans modèle de vision.
+
+### Mode `--no-images`
+
+Extraction rapide du texte via PyMuPDF (PDF) ou python-pptx (PPTX), sans aucun appel
+au modèle. Utile pour vérifier la mise en forme ou traiter des documents purement textuels.
+
+---
+
+## Format de sortie
+
+Chaque fichier Markdown généré commence par un en-tête automatique :
+
 ```markdown
----
+# nom-du-fichier
 
-**[Image 1: schéma technique]**
-
-*Texte visible:*
-> Service A → API Gateway → Service B
-
-*Description:*
-Architecture microservices montrant la communication entre deux services via une
-API Gateway. Le Service A envoie des requêtes HTTP au Gateway qui les route vers
-le Service B. Présence d'un load balancer et d'une base de données PostgreSQL.
+*Source : nom-du-fichier.pdf (PDF) — Modèle vision : `qwen2.5vl:latest`*
 
 ---
-``` Enrichissement LLM |
-|-----------|-----------------|---------|----------------|---------------------|
-| **Rapide (pipeline original)** | Delibia, chunking externe | 4-8 | ✅ llava:13b | ❌ --no-enrich |
-| **Équilibré** | Usage général | 2-4 | ✅ llava:13b | ✅ Par défaut |
-| **Qualité max** | Documents techniques complexes | 1-2 | ✅ llava:34b | ✅ Par défaut |
-| **Ultra-rapide** | Documents textuels simples | 4-8 | ❌ --no-images | ❌ --no-enrich
-
-| Stratégie | Recommandé pour | Threads | Analyse images |
-|-----------|-----------------|---------|----------------|
-| **Pipeline original strict (--no-enrich)** : ~1-2 minutes
-- **Rapide** | Documents textuels simples | 4-8 | ❌ --no-images |
-| **Équilibré** | Usage général | 2-4 | ✅ llava:13b |
-| **Qualité max** | Documents techniques complexes | 1-2 | ✅ llava:34b |
-
-### Temps de traitement estimé
-
-Pour un document de 20 pages avec 5 images :
-- **Sans analyse d'images** : ~2-3 minutes
-- **Avec analyse (llava:13b)** : ~8-12 minutes
-- **Avec analyse (llava:34b)** : ~15-20 minutes
-
-### Amélioration des performances
-
-1. **GPU recommandé** pour Ollama (3x plus rapide)
-2. **Limiter le nombre de threads** si mémoire limitée
-3. **Pré-filtrer les images** en ajustant `MIN_IMAGE_SIZE`
-4. **Désactiver l'analyse d'images** pour documents textuels simples
-
-## 🛠️ Dépannage
-
-### Problème : Modèle Ollama non trouvé
-```
-Solution : ollama pull <nom-du-modele>
 ```
 
-### Problème : Mémoire insuffisante
+Puis le contenu page par page (PDF/PPTX) ou section par section (DOCX),
+avec les séparateurs `---` entre pages/diapositives.
+
+---
+
+## Test rapide
+
 ```bash
-# Réduire le nombre de threads
-python main.py doc_to_markdown 1
+# Test sans modèle de vision (rapide, ~5 secondes)
+venv/Scripts/python.exe convert.py doc-raw/guideAchatSimplifie.pdf --no-images -o doc-md/test-rapide.md
 
-# Ou utiliser un modèle plus léger
-python main.py doc_to_markdown 2 --vision-model llava:7b
+# Test complet avec analyse visuelle page par page
+venv/Scripts/python.exe convert.py doc-raw/guideAchatSimplifie.pdf -o doc-md/guideAchatSimplifie.md
 ```
 
-### Problème : Images mal analysées
-```python
-# Dans config.py, ajuster le seuil
-RELEVANCE_THRESHOLD = 0.7  # Plus strict (défaut: 0.6)
-MIN_IMAGE_SIZE = (150, 150)  # Filtrer les petites images
-```
-
-### Problème : Erreur PyMuPDF
-```bash
-pip install --upgrade pymupdf
-```
-
-## 📝 Exemples de résultats
-
-### Avant (PDF source)
-```
-[Image de schéma technique non décrite]
-Le système utilise une architecture microservices.
-[Graphique de performance]
-```
-
-### Après (Markdown enrichi)
-```markdown
----
-
-**[Image 1: schéma technique]**
-
-*Description:*
-Architecture microservices avec 5 composants principaux: Frontend (React),
-API Gateway (Kong), Services métier (Node.js), Base de données (PostgreSQL),
-et Cache (Redis). Communication via REST et événements asynchrones.
+Consultez ensuite `doc-md/guideAchatSimplifie.md` pour vérifier le résultat.
 
 ---
 
-Le système utilise une architecture microservices permettant une scalabilité
-horizontale et un déploiement indépendant de chaque service.
+## Structure du projet
 
----
-
-**[Image 2: graphique]**
-
-*Description:*
-Graphique en courbes montrant l'évolution des performances sur 6 mois.
-Temps de réponse moyen passé de 250ms à 80ms après optimisation.
-Amélioration notable à partir du mois 3 suite à l'ajout du cache Redis.
-
----
+```
+pre-traitement-images-schemas/
+├── convert.py              # CLI principal
+├── requirements.txt        # Dépendances Python
+├── setup_env.sh            # Script d'installation (Linux/macOS/Git Bash)
+├── src/
+│   ├── page_transcriber.py # Prompt + fonction de transcription page → Markdown
+│   ├── pdf_parser.py       # Parser PDF : rendu page → vision (ou texte en --no-images)
+│   ├── docx_parser.py      # Parser Word : styles natifs + tableaux GFM
+│   ├── pptx_parser.py      # Parser PPTX : LibreOffice → PDF → vision (ou shapes)
+│   ├── image_analyzer.py   # Analyse d'images individuelles (fallback PPTX sans LibreOffice)
+│   └── ollama_client.py    # Client HTTP Ollama — resize auto 1024px
+├── doc-raw/                # Dossier source (documents à convertir)
+└── doc-md/                 # Dossier de sortie (Markdown générés)
 ```
 
-## 🔄 Évolutions futures
+---
 
-- [ ] Support PowerPoint (PPTX)
-- [ ] Export multi-formats (HTML, PDF enrichi)
-- [ ] Interface web
-- [ ] Détection automatique de la langue
-- [ ] Support tableaux complexes
-- [ ] OCR avancé pour images scannées
+## Dépendances Python
 
-## 🤝 Contribution
-
-Pour améliorer le système :
-1. Testez avec vos documents
-2. Ajustez les paramètres dans `config.py`
-3. Signalez les bugs ou limitations
-4. Proposez des améliorations
-
-## 📄 Licence
-
-Ce projet est destiné à un usage interne pour le pré-traitement de ressources documentaires.
-
-## 📧 Support
-
-Pour toute question ou problème, consultez la documentation d'Ollama :
-- https://ollama.ai/
-- https://github.com/ollama/ollama
+| Paquet | Rôle |
+|---|---|
+| `PyMuPDF` | Rendu des pages PDF en images + extraction texte (mode --no-images) |
+| `python-docx` | Lecture des fichiers Word (.docx) |
+| `python-pptx` | Lecture des fichiers PowerPoint (.pptx) |
+| `Pillow` | Traitement des images (conversion, redimensionnement) |
+| `requests` | Communication HTTP avec l'API Ollama |
 
 ---
 
-**Note importante** : L'analyse d'images nécessite un modèle multimodal (LLaVA, BakLLaVA) et peut être gourmande en ressources. Pour des tests rapides, utilisez l'option `--no-images`.
-traitement de documenttion sous plusieurs formats afin d'en améliorer la lisibilité par des modèles de langages.
+## Problèmes fréquents
 
-## Pre-recquis :
+**Ollama inaccessible**
+```
+Erreur : Ollama n'est pas accessible sur http://localhost:11434
+```
+→ Lancez `ollama serve` dans un terminal séparé.
 
-Python 3.12.10 (ou supérieur)
+---
 
+**Modèle de vision absent**
+```
+Avertissement : le modèle 'qwen2.5vl:latest' n'est pas installé.
+```
+→ Exécutez `ollama pull qwen2.5vl` puis relancez.
 
+---
 
-## Process lancement projet :
+**PPTX : schémas non capturés**
+```
+LibreOffice non trouvé — extraction par shapes (les schémas vectoriels ne seront pas capturés).
+```
+→ Installez LibreOffice depuis [libreoffice.org/download](https://www.libreoffice.org/download/)
 
-1. Cloner le projet depuis le dépôt GitHub : `git clone https://github.com/clementgoy/pre-traitement-documentaire`
-2. Créer un environnement virtuel : `python -m venv env`
-3. Activer l environnement virtuel :
-   - Sur Windows : `.\env\Scripts\activate`
-   - Sur macOS/Linux : `source env/bin/activate`
-4. Installer les dépendances : `pip install -r requirements.txt`
-5. Lancer le script de pré-traitement : 
+---
+
+**Format de fichier non supporté**
+```
+Erreur : le format '.doc' (ancien format binaire) n'est pas supporté.
+```
+→ Ouvrez le fichier dans Microsoft Office ou LibreOffice et enregistrez-le en `.docx` ou `.pptx`.
+
+---
+
+## Performances indicatives
+
+Le modèle de vision traite **une page à la fois**. Repères sur une machine
+avec 21 Go de RAM et sans GPU dédié (CPU uniquement) :
+
+| Document | Pages/Slides | Avec vision | Sans vision (`--no-images`) |
+|---|---|---|---|
+| PDF 10 pages | 10 | ~5-10 min | ~5 sec |
+| PDF 75 pages | 75 | ~40-60 min | ~30 sec |
+| PPTX 20 slides (avec LibreOffice) | 20 | ~10-20 min | ~10 sec |
+
+Utilisez `--no-images` pour des tests de mise en forme rapides.
+La conversion avec vision est longue mais produit un Markdown fidèle et exploitable.

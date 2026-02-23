@@ -1,10 +1,5 @@
-# Core dependencies
-ollama
-
-# Document processing
-pymupdf          # PDF extraction (PyMuPDF)
-python-docx      # Word document processing
-Pillow           # Image processing
-
-# Optional: PowerPoint support
-# python-pptx
+PyMuPDF>=1.23.0
+python-docx>=1.1.0
+python-pptx>=0.6.23
+Pillow>=10.0.0
+requests>=2.31.0
