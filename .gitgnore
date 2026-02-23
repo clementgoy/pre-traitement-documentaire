@@ -6,9 +6,9 @@ ENV/
 env.bak/
 venv.bak/
 
-doc-raw/*
+doc-raw/**
+doc-md/**
 !doc-raw/.gitkeep
-doc-md/*
 !doc-md/.gitkeep
 
 # Fichiers Python
