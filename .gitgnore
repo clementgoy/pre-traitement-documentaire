@@ -8,8 +8,6 @@ venv.bak/
 
 doc-raw/**
 doc-md/**
-!doc-raw/.gitkeep
-!doc-md/.gitkeep
 
 # Fichiers Python
 __pycache__/
