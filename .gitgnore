@@ -1,4 +1,3 @@
-# Environnements virtuels Python
 venv/
 env/
 .venv/
@@ -7,9 +6,10 @@ ENV/
 env.bak/
 venv.bak/
 
-# Documents raw et markdown
-doc-raw/
-doc-md/
+doc-raw/*
+!doc-raw/.gitkeep
+doc-md/*
+!doc-md/.gitkeep
 
 # Fichiers Python
 __pycache__/
