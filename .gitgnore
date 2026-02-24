@@ -5,6 +5,8 @@ env/
 ENV/
 env.bak/
 venv.bak/
+.venv
+venv
 
 doc-raw/**
 doc-md/**

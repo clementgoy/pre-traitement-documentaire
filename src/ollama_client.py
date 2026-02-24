@@ -33,12 +33,22 @@ def generate(
     prompt: str,
     image: Image.Image | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    max_image_size: int = 1024,
+    max_tokens: int = 1024,
 ) -> str:
     """
     Appelle l'API Ollama en mode génération (non-streaming).
 
-    Si `image` est fournie, elle est encodée en base64 et envoyée
-    avec le prompt (nécessite un modèle multimodal comme llava).
+    Args:
+        model         : nom du modèle Ollama
+        prompt        : texte du prompt
+        image         : image PIL optionnelle (modèle multimodal requis)
+        timeout       : délai max en secondes
+        max_image_size: côté le plus long de l'image après redimensionnement (px).
+                        Réduire accélère l'inférence ; 768 est un bon compromis
+                        vitesse/qualité pour la transcription de pages complètes.
+        max_tokens    : nombre max de tokens générés en sortie (num_predict).
+                        Augmenter évite la troncature sur les pages denses.
     """
     payload: dict = {
         "model": model,
@@ -46,19 +56,16 @@ def generate(
         "stream": False,
         "options": {
             "temperature": 0.1,  # Basse température pour des réponses factuelles
-            "num_predict": 1024,
+            "num_predict": max_tokens,
         },
     }
 
     if image is not None:
-        # Normalisation du mode couleur
         if image.mode not in ("RGB", "L"):
             image = image.convert("RGB")
-        # Redimensionnement : les modèles de vision n'ont pas besoin de plus de
-        # 1024px — cela réduit la taille de la requête et accélère l'inférence
-        if max(image.width, image.height) > 1024:
+        if max(image.width, image.height) > max_image_size:
             image = image.copy()
-            image.thumbnail((1024, 1024), Image.LANCZOS)
+            image.thumbnail((max_image_size, max_image_size), Image.LANCZOS)
         buf = BytesIO()
         image.save(buf, format="JPEG", quality=85)
         payload["images"] = [base64.b64encode(buf.getvalue()).decode()]

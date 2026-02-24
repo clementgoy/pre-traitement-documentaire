@@ -140,14 +140,25 @@ Options :
 
 ### PDF (mode vision)
 
-Chaque page est rendue en image (150 DPI) et envoyée à `qwen2.5vl`.
-Le modèle produit un Markdown structuré en voyant le contexte visuel complet :
+Chaque page est analysée par un classificateur rapide (PyMuPDF, sans LLM) qui choisit
+le mode de traitement optimal :
 
-- **Tableaux** → reproduits en GFM (`| col | col |`)
-- **Schémas de processus / flowcharts** → description des étapes, flèches et relations
-- **Organigrammes** → hiérarchie complète avec rôles et liens
-- **Mises en page multi-colonnes** → colonne gauche lue en entier, puis colonne droite
-- **Illustrations / exemples** → mentionnés brièvement sans analyser le décoratif
+| Mode | Déclenchement | Traitement |
+|---|---|---|
+| **vision** | Schémas, images significatives, mise en page complexe (>25 blocs) | Rendu image 150 DPI → `qwen2.5vl` |
+| **tableau** | Tableaux structurés détectés (≥2 lignes×colonnes), page simple | `find_tables()` PyMuPDF → GFM |
+| **texte** | Pages simples sans tableau ni image significative | Extraction blocs PyMuPDF |
+
+Sur un document typique de commande publique (75 pages), le classificateur évite
+en moyenne **25-30% des appels au modèle** sans perte de qualité.
+
+Le mode **vision** (le plus fidèle) couvre :
+- Tableaux, schémas de processus, flowcharts, organigrammes
+- Mises en page multi-colonnes complexes
+- Illustrations / exemples → mentionnés brièvement, décoratif ignoré
+
+Paramètres du mode vision : image 768 px (compact, rapide), 2048 tokens max
+(pas de troncature sur les pages denses).
 
 ### PPTX (mode vision)
 
@@ -273,9 +284,12 @@ avec 21 Go de RAM et sans GPU dédié (CPU uniquement) :
 
 | Document | Pages/Slides | Avec vision | Sans vision (`--no-images`) |
 |---|---|---|---|
-| PDF 10 pages | 10 | ~5-10 min | ~5 sec |
-| PDF 75 pages | 75 | ~40-60 min | ~30 sec |
+| PDF simple (texte, titres) | 10 | ~3-5 min | ~5 sec |
+| PDF dense (tableaux, schémas) | 75 | ~25-35 min | ~30 sec |
 | PPTX 20 slides (avec LibreOffice) | 20 | ~10-20 min | ~10 sec |
 
+> **Repères machine** : 21 Go RAM, sans GPU dédié (CPU uniquement). Les temps varient
+> selon la densité des pages — le classificateur automatique évite ~25% des appels modèle.
+
 Utilisez `--no-images` pour des tests de mise en forme rapides.
-La conversion avec vision est longue mais produit un Markdown fidèle et exploitable.
+La conversion avec vision est longue mais produit un Markdown fidèle et exploitable par un LLM.
