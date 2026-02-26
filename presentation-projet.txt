@@ -1,0 +1,239 @@
+================================================================================
+  PRÉ-TRAITEMENT DOCUMENTAIRE POUR DELIBIA
+  Présentation du projet, choix techniques et fonctionnalités
+================================================================================
+
+
+LE PROBLÈME DE DÉPART
+----------------------
+
+La plateforme Delibia est utilisée pour retrouver de l'information dans une base
+documentaire (guides d'achat, procédures, supports de formation...). Elle fonctionne
+sur le principe du RAG (Retrieval-Augmented Generation) : elle découpe les documents
+en morceaux de texte, les indexe, et répond aux questions en allant chercher les
+passages pertinents.
+
+Le problème, c'est que Delibia ne sait lire que du texte. Quand un document contient
+un tableau complexe, un organigramme, un schéma de processus avec des flèches, ou une
+mise en page en deux colonnes, tout ce contenu visuel est soit ignoré, soit mal lu.
+Or dans les documents de commande publique, une bonne partie de l'information
+structurante se trouve précisément dans ces éléments : les seuils de marchés dans un
+tableau, les étapes d'une procédure dans un organigramme, les circuits de validation
+dans un schéma...
+
+L'idée du projet est donc simple : transformer ces documents en Markdown enrichi avant
+de les donner à Delibia. Un Markdown où les tableaux sont proprement écrits, les
+schémas sont décrits en texte, et les organigrammes sont retranscrits fidèlement. Delibia
+ne voit plus un document "visuellement riche mais textuellement pauvre" — elle voit un
+texte structuré et complet qu'elle peut vraiment exploiter.
+
+
+POURQUOI MARKDOWN ?
+--------------------
+
+Le Markdown est un format texte léger qui permet d'exprimer une structure (titres,
+listes, tableaux) sans alourdir la lecture. C'est aussi un format que les modèles de
+langage lisent et interprètent très bien, ce qui est exactement ce dont Delibia a besoin.
+
+Delibia ne supporte pas directement les fichiers .md, donc une deuxième étape reconvertit
+le Markdown en DOCX. C'est une conversion "aller-retour" : on enrichit en passant par
+Markdown, puis on revient au format attendu par la plateforme.
+
+
+L'APPROCHE TECHNIQUE : UN MODÈLE DE VISION LOCAL
+--------------------------------------------------
+
+Pour "lire" les parties visuelles d'un document, on utilise un modèle de vision :
+qwen2.5vl, un modèle multimodal capable d'analyser une image et d'en produire une
+description textuelle structurée.
+
+Ce modèle tourne en local via Ollama. Ce choix est délibéré : les documents traités
+peuvent contenir des informations sensibles sur des marchés publics, des procédures
+internes, des montants... Les faire transiter vers un service cloud externe (OpenAI,
+Anthropic, Google...) poserait des problèmes de confidentialité. En local, rien ne sort
+de la machine.
+
+Le revers de la médaille, c'est la vitesse : sans GPU dédié, le modèle tourne sur CPU
+et peut prendre plusieurs minutes par page dense. C'est le principal compromis du projet,
+et plusieurs mécanismes ont été mis en place pour en atténuer l'impact (voir plus bas).
+
+
+LE PIPELINE DE TRAITEMENT
+--------------------------
+
+Tout repose sur deux scripts principaux :
+
+  convert.py           PDF / DOCX / PPTX  →  Markdown  (doc-raw/ → doc-md/)
+  convert-md-to-docx.py  Markdown  →  DOCX             (doc-md/ → doc-docx/)
+
+Le premier est le cœur du projet. Le second est une étape finale rapide (quelques
+secondes) pour rendre les fichiers compatibles avec Delibia.
+
+Pour les fichiers DOCX, la structure native Word est lue directement (styles, paragraphes,
+tableaux) — pas besoin du modèle de vision, la qualité est optimale.
+
+Pour les PDF et PPTX, chaque page est analysée individuellement. C'est là qu'intervient
+le classificateur automatique.
+
+
+LE CLASSIFICATEUR : ÉVITER LES APPELS INUTILES AU MODÈLE
+----------------------------------------------------------
+
+Envoyer chaque page au modèle de vision serait trop lent. Beaucoup de pages sont simples :
+une introduction, quelques paragraphes, un titre et du texte. Les passer par le modèle
+n'apporterait rien et gaspillerait du temps.
+
+Le classificateur analyse chaque page sans faire appel au modèle, en quelques millisecondes,
+et décide du traitement adapté :
+
+  - Mode "texte"   : la page est simple (peu de blocs, pas d'image, pas de tableau).
+                     PyMuPDF extrait le texte directement. Rapide, qualité parfaite.
+
+  - Mode "tableau" : la page contient des tableaux structurés détectables, sans schéma.
+                     PyMuPDF détecte et formate les tableaux en Markdown GFM. Pas de modèle.
+
+  - Mode "vision"  : la page est complexe (schéma, organigramme, mise en page fragmentée,
+                     image significative). La page est rendue en image et envoyée au modèle.
+
+Sur un document typique, le classificateur évite environ 25 à 30 % des appels au modèle
+sans aucune perte de qualité. Sur un document long, ça peut représenter plusieurs minutes
+gagnées.
+
+
+LE PROMPT : CE QUE LE MODÈLE EST INVITÉ À FAIRE (ET NE PAS FAIRE)
+-------------------------------------------------------------------
+
+Le modèle reçoit des instructions précises adaptées au contexte métier (commande publique,
+acheteurs d'un conseil départemental). Ces instructions définissent comment traiter chaque
+type de contenu visuel :
+
+Tableaux → reproduits fidèlement en Markdown GFM, cellule par cellule.
+
+Schémas de processus, organigrammes, diagrammes → description complète et détaillée.
+Tous les libellés, toutes les flèches avec leur sens et leur relation, la hiérarchie
+entière. C'est la partie la plus importante : un organigramme décisionnel qui montre
+"qui valide quoi" représente de l'information métier critique qui ne doit pas être perdue.
+
+Captures d'écran de logiciels ou plateformes → une seule ligne courte du type :
+"(Capture d'écran : interface de la plateforme X montrant...)"
+On ne tente pas de lire les données qui s'y affichent, elles seraient illisibles à
+cette résolution et souvent propres à un instant donné.
+
+Photos décoratives, logos, fonds de page → ignorés complètement.
+
+Cette distinction n'est pas anodine. Elle permet d'être rapide là où c'est possible
+(captures d'écran) et précis là où c'est nécessaire (organigrammes). Le modèle applique
+ces règles systématiquement sans intervention manuelle.
+
+
+LA GESTION DES TIMEOUTS : UN VRAI PROBLÈME RÉSOLU EN PLUSIEURS ÉTAPES
+-----------------------------------------------------------------------
+
+Sur CPU, le modèle de vision peut être lent. La principale limite technique du projet
+est ce temps d'inférence. Plusieurs mécanismes ont été mis en place pour le rendre
+aussi indolore que possible.
+
+--- Streaming Ollama ---
+
+C'est le changement le plus important. Initialement, le client envoyait une requête
+et attendait la réponse complète (mode non-streaming). Le timeout de 300 secondes
+s'appliquait à la durée totale : encodage de l'image + génération de tous les tokens.
+Si une page prenait 350 secondes, la connexion était coupée à 300 secondes et la page
+était perdue.
+
+Avec le mode streaming, le modèle envoie les tokens un par un au fur et à mesure qu'il
+les génère. Le timeout s'applique désormais au silence entre deux tokens, pas à la durée
+totale. En pratique, cela signifie qu'un organigramme qui prend 15 minutes à décrire
+ne posera aucun problème : tant que le modèle continue de générer, des tokens arrivent
+continuellement et le timeout ne se déclenche jamais.
+
+--- Timeout porté à 600 secondes ---
+
+L'encodage de l'image (transformation de l'image en représentation interne pour le modèle)
+se produit avant la génération du premier token. Pendant cette phase, aucun chunk n'est
+envoyé, même en mode streaming. Si l'encodage prend plus de 300 secondes, on timeout
+avant même le premier token. Porter le timeout à 600 secondes couvre cette phase pour
+les pages les plus complexes.
+
+--- Retry automatique à résolution réduite ---
+
+Si le timeout se déclenche quand même (encodage de l'image > 600 secondes), le pipeline
+relance automatiquement la page avec une image plus petite : 512 pixels au lieu de 768.
+Une image de 512 pixels représente environ 44 % des pixels d'une image de 768 pixels.
+L'encodage est donc significativement plus rapide, au prix d'une légère perte de finesse
+sur les textes très petits. Dans la grande majorité des cas, c'est suffisant pour capturer
+l'intégralité de l'information.
+
+--- Placeholder visible en cas d'échec ---
+
+Si malgré tout une page échoue (double timeout, erreur réseau...), elle n'est plus
+silencieusement ignorée. Un marqueur est inséré dans le Markdown :
+"> (Page X — non transcrite : ReadTimeout)"
+On sait exactement quelle page a posé problème. Il est alors possible de la retraiter
+seule ou d'inspecter manuellement le document source.
+
+
+LA CONVERSION MARKDOWN → DOCX AVEC PYPANDOC
+---------------------------------------------
+
+Cette étape est volontairement simple. Pandoc est un outil de conversion de documents
+très robuste, utilisé dans toute la chaîne éditoriale académique et professionnelle.
+La bibliothèque Python pypandoc en est un wrapper.
+
+Le script de conversion gère trois modes d'utilisation :
+  --file    : convertit un fichier unique
+  --dir     : convertit tous les .md d'un dossier (en place)
+  --src/dst : convertit d'un dossier source vers un dossier destination
+
+Si Pandoc n'est pas installé sur la machine, le script le télécharge automatiquement
+au premier lancement. Aucune configuration manuelle n'est nécessaire.
+
+
+UTILISATION AU QUOTIDIEN
+--------------------------
+
+Le workflow complet tient en deux commandes :
+
+  1) Convertir les documents sources en Markdown enrichi :
+     venv/Scripts/python.exe convert.py doc-raw/
+
+  2) Reconvertir les Markdown en DOCX pour Delibia :
+     venv/Scripts/python.exe convert-md-to-docx.py --src doc-md/ --dst doc-docx/
+
+Les fichiers DOCX produits dans doc-docx/ sont prêts à être versés dans Delibia.
+
+Pour tester rapidement sans passer par le modèle de vision (extraction texte seule) :
+     venv/Scripts/python.exe convert.py doc-raw/ --no-images
+
+
+CE QUE LE PROJET NE FAIT PAS (ET POURQUOI C'EST VOULU)
+--------------------------------------------------------
+
+Il n'y a pas de post-traitement sur le Markdown généré, pas de relecture automatique,
+pas de correction du modèle. Ce que le modèle écrit est conservé tel quel.
+
+La raison : introduire une étape de "correction" automatique rajouterait une couche
+d'erreurs potentielles. Le modèle qwen2.5vl est fiable sur ce type de documents. Si
+une erreur de transcription se produit, elle est visible dans le Markdown et peut être
+corrigée manuellement avant la conversion DOCX.
+
+Le projet n'essaie pas non plus de reconnaître le type de document (guide, procédure,
+délibération...) pour adapter le traitement. Tous les documents passent par le même
+pipeline généraliste. Le prompt est rédigé de façon à couvrir les cas courants de la
+commande publique sans avoir besoin de spécialisation par type.
+
+
+RÉSUMÉ DES FICHIERS CLÉS
+--------------------------
+
+  convert.py              Pipeline principal (PDF/DOCX/PPTX → Markdown)
+  convert-md-to-docx.py   Conversion finale (Markdown → DOCX pour Delibia)
+  src/page_transcriber.py Prompt de transcription + appel au modèle de vision
+  src/pdf_parser.py       Classificateur de pages + rendu + retry sur timeout
+  src/ollama_client.py    Client HTTP Ollama (streaming, timeout, resize image)
+  src/docx_parser.py      Lecture native des fichiers Word (styles, tableaux)
+  src/pptx_parser.py      Traitement PPTX via LibreOffice (ou extraction shapes)
+  requirements.txt        Dépendances Python (PyMuPDF, pypandoc, requests...)
+  setup_env.sh            Script d'installation complet (venv + pandoc)
+
+================================================================================

@@ -17,6 +17,12 @@ sont ignorés. Pour les DOCX, la structure native (styles Word, tableaux) est ut
 | [Ollama](https://ollama.com) | 0.16+ | `ollama --version` |
 | Modèle de vision | `qwen2.5vl:latest` | `ollama list` |
 | [LibreOffice](https://www.libreoffice.org/download/) *(optionnel)* | 7.0+ | `soffice --version` |
+| [Pandoc](https://pandoc.org/installing.html) | 3.0+ | `pandoc --version` |
+
+> **Pandoc** est nécessaire pour la conversion Markdown → DOCX (`convert-md-to-docx.py`).
+> Si Pandoc n'est pas installé sur le système, il est **téléchargé automatiquement**
+> lors du premier lancement du script (via `pypandoc.download_pandoc()`).
+> Vous pouvez aussi l'installer manuellement depuis [pandoc.org](https://pandoc.org/installing.html).
 
 > **Note Windows** : les commandes ci-dessous utilisent Git Bash (syntaxe Unix).
 > Dans un terminal CMD ou PowerShell, `venv/Scripts/python.exe` reste identique.
@@ -158,7 +164,7 @@ Le mode **vision** (le plus fidèle) couvre :
 - Illustrations / exemples → mentionnés brièvement, décoratif ignoré
 
 Paramètres du mode vision : image 768 px (compact, rapide), 2048 tokens max
-(pas de troncature sur les pages denses).
+(pas de troncature sur les pages denses). En cas de timeout, relance automatique à 512 px.
 
 ### PPTX (mode vision)
 
@@ -214,10 +220,11 @@ Consultez ensuite `doc-md/guideAchatSimplifie.md` pour vérifier le résultat.
 ## Structure du projet
 
 ```
-pre-traitement-images-schemas/
-├── convert.py              # CLI principal
+pre-traitement-documentaire/
+├── convert.py              # CLI principal : PDF/DOCX/PPTX → Markdown
+├── convert-md-to-docx.py  # CLI secondaire : Markdown → DOCX (pour Delibia)
 ├── requirements.txt        # Dépendances Python
-├── setup_env.sh            # Script d'installation (Linux/macOS/Git Bash)
+├── setup_env.sh            # Script d'installation (Git Bash Windows / Linux / macOS)
 ├── src/
 │   ├── page_transcriber.py # Prompt + fonction de transcription page → Markdown
 │   ├── pdf_parser.py       # Parser PDF : rendu page → vision (ou texte en --no-images)
@@ -225,8 +232,9 @@ pre-traitement-images-schemas/
 │   ├── pptx_parser.py      # Parser PPTX : LibreOffice → PDF → vision (ou shapes)
 │   ├── image_analyzer.py   # Analyse d'images individuelles (fallback PPTX sans LibreOffice)
 │   └── ollama_client.py    # Client HTTP Ollama — resize auto 1024px
-├── doc-raw/                # Dossier source (documents à convertir)
-└── doc-md/                 # Dossier de sortie (Markdown générés)
+├── doc-raw/                # Dossier source (documents originaux)
+├── doc-md/                 # Dossier intermédiaire (Markdown générés)
+└── doc-docx/               # Dossier de sortie final (DOCX pour Delibia)
 ```
 
 ---
@@ -240,6 +248,39 @@ pre-traitement-images-schemas/
 | `python-pptx` | Lecture des fichiers PowerPoint (.pptx) |
 | `Pillow` | Traitement des images (conversion, redimensionnement) |
 | `requests` | Communication HTTP avec l'API Ollama |
+| `pypandoc` | Conversion Markdown → DOCX (wrappeur Python autour de pandoc) |
+
+---
+
+## Conversion Markdown → DOCX (pour Delibia)
+
+La plateforme **Delibia** ne supporte pas les fichiers `.md`. Le script `convert-md-to-docx.py`
+convertit les fichiers Markdown produits par `convert.py` en `.docx` via Pandoc.
+
+### Utilisation
+
+```bash
+# Convertir un dossier entier doc-md/ → doc-docx/
+venv/Scripts/python.exe convert-md-to-docx.py --src doc-md/ --dst doc-docx/
+
+# Convertir un fichier unique
+venv/Scripts/python.exe convert-md-to-docx.py --file doc-md/monDocument.md
+
+# Convertir un fichier unique avec sortie explicite
+venv/Scripts/python.exe convert-md-to-docx.py --file doc-md/monDocument.md --out doc-docx/monDocument.docx
+
+# Convertir tous les .md d'un dossier en place (même dossier)
+venv/Scripts/python.exe convert-md-to-docx.py --dir doc-md/
+```
+
+### Workflow complet
+
+```
+doc-raw/  →[convert.py]→  doc-md/  →[convert-md-to-docx.py]→  doc-docx/
+(PDF/DOCX/PPTX)           (Markdown)                            (DOCX → Delibia)
+```
+
+> Si Pandoc n'est pas installé, le script le télécharge automatiquement au premier lancement.
 
 ---
 
@@ -250,6 +291,24 @@ pre-traitement-images-schemas/
 Erreur : Ollama n'est pas accessible sur http://localhost:11434
 ```
 → Lancez `ollama serve` dans un terminal séparé.
+
+---
+
+**Timeout sur une page**
+```
+erreur — HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=600)
+```
+→ Le modèle n'a pas répondu dans les 600 s allouées à l'encodage de l'image.
+Le pipeline relance automatiquement la page en résolution réduite (512 px au lieu de 768 px),
+ce qui accélère l'encodage d'environ 55 %.
+
+Si le retry échoue aussi, la page est marquée dans le Markdown :
+`> *(Page X — non transcrite : ReadTimeout)*`
+
+**Note technique** : le client utilise le mode streaming d'Ollama. Le timeout de 600 s
+s'applique au silence entre deux tokens générés, pas à la durée totale de génération.
+Un organigramme dense peut donc être transcrit même s'il prend 15+ minutes, tant que
+le modèle continue de produire des tokens.
 
 ---
 

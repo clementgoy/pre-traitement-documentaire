@@ -22,9 +22,30 @@ from collections import Counter
 from io import BytesIO
 
 import fitz  # PyMuPDF
+import requests
 from PIL import Image
 
-from .page_transcriber import RENDER_DPI, transcribe_page
+from .page_transcriber import RENDER_DPI, describe_image, transcribe_page
+
+# Résolution de repli en cas de timeout sur une page vision (pleine page).
+# 512 px réduit la surface de l'image d'environ 55 % par rapport à 768 px.
+_RETRY_IMAGE_SIZE = 512
+
+# Nombre minimum de blocs texte sur une page pour activer le mode hybride.
+# Si une page contient des images significatives ET >= ce seuil de blocs texte,
+# on extrait le texte via PyMuPDF et on décrit les images individuellement.
+# Seuil bas (2) pour activer le mode hybride dès qu'il y a du texte extractible.
+# Un organigramme pleine page a généralement 0-1 blocs texte en dehors de l'image
+# → reste en vision. Une page avec texte d'instructions + capture d'écran a 2+ blocs
+# → passe en hybride, ce qui élimine les hallucinations sur les captures.
+_HYBRID_TEXT_THRESHOLD = 2
+
+# Nombre minimum d'images significatives pour qu'une page avec des blocs texte courts
+# soit routée en mode vision (au lieu d'hybride).
+# Un vrai diagramme multi-éléments (flowchart) a généralement ≥ 4 petites images
+# (flèches, connecteurs, boîtes graphiques séparées).
+# Une page "instructions + capture d'écran" a 1–3 images → reste en hybride.
+_DIAGRAM_MIN_IMAGES = 4
 
 # ── Seuils du classificateur de complexité ────────────────────────────────────
 
@@ -118,7 +139,28 @@ def _block_to_markdown(block: dict, body_size: float) -> str:
         return ""
 
     level = 0
-    if sizes:
+    word_count = len(full_text.split())
+
+    # Critères pour la détection de titre par taille de police :
+    # – Le bloc doit être court (≤ 8 mots) : au-delà, c'est du corps de texte
+    #   même si la police est légèrement différente de la taille de référence.
+    # – Le texte ne doit pas finir par un signe de ponctuation de phrase (".", ",", ":", ";").
+    # – Les symboles de puce seuls (▪, •, →, —…) ne sont jamais des titres.
+    # – Les blocs multi-lignes (fragments de phrase coupée à l'affichage) ne sont pas des titres.
+    ends_with_sentence_punct = bool(full_text) and full_text[-1] in ".,:;"
+    is_bullet_symbol = len(full_text.strip()) <= 2 and not full_text.strip().isalnum()
+    has_internal_newlines = "\n" in full_text
+    # Un titre commence toujours par une majuscule : un fragment de phrase
+    # débutant en minuscule (ex : "votre profil en page") n'est pas un titre.
+    starts_with_lowercase = bool(full_text.strip()) and full_text.strip()[0].islower()
+    if (
+        sizes
+        and word_count <= 8
+        and not ends_with_sentence_punct
+        and not is_bullet_symbol
+        and not has_internal_newlines
+        and not starts_with_lowercase
+    ):
         avg_size = sum(sizes) / len(sizes)
         level = _heading_level(avg_size, body_size)
 
@@ -351,25 +393,92 @@ def _has_meaningful_tables(tables: list) -> bool:
     return False
 
 
+def _tables_have_complex_headers(tables: list) -> bool:
+    """
+    Détecte si des tableaux ont des en-têtes complexes (double-en-tête, cellules fusionnées,
+    sous-en-têtes avec noms longs).
+
+    Signal : la deuxième ligne non vide a la plupart de ses cellules avec du texte long
+    (> 25 caractères). Cela indique une ligne de sous-en-têtes (ex. abréviations + noms
+    complets d'organisations), structure que find_tables() gère mal.
+
+    Dans ce cas, préférer le mode vision pour que le modèle voie la structure visuelle.
+    """
+    for table in tables:
+        try:
+            data = table.extract()
+            if not data or len(data) < 3:
+                continue
+            col_count = max((len(row) for row in data), default=0)
+            if col_count < 2:
+                continue
+            data_rows = [
+                row for row in data
+                if any((cell or "").strip() for cell in row)
+            ]
+            if len(data_rows) < 3:
+                continue
+            # Vérifier la deuxième ligne de données (potentielle sous-en-tête)
+            sub_row = data_rows[1]
+            long_cells = sum(
+                1 for cell in sub_row
+                if len((cell or "").strip()) > 25
+            )
+            # Si la plupart des cellules sont longues → sous-en-têtes complexes
+            if long_cells >= col_count - 1:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _classify_page(page: fitz.Page) -> str:
     """
     Analyse rapide (sans LLM) pour choisir le mode de traitement d'une page.
 
     Retourne :
-      'text'   — extraction texte PyMuPDF (page simple ou sans vrai tableau)
-      'table'  — find_tables() + texte (tableaux de données réels, layout simple)
-      'vision' — rendu image + modèle de vision (page complexe)
+      'text'   — extraction texte PyMuPDF (page simple, pas d'image ni de tableau)
+      'table'  — find_tables() + texte (tableaux structurés, layout simple)
+      'hybrid' — texte extrait par PyMuPDF + images décrites individuellement par le modèle.
+                 Déclenché quand la page mélange du texte substantiel et des images
+                 (typiquement : instructions + captures d'écran de logiciel).
+                 Avantage : le texte est reproduit mot pour mot, le modèle ne voit que
+                 les images isolées → élimine les hallucinations sur les captures d'écran.
+      'vision' — page entière rendue en image + modèle de vision.
+                 Déclenché quand l'image occupe l'essentiel de la page (organigramme,
+                 schéma de processus, diagramme complexe) ou quand le layout est
+                 trop fragmenté pour une extraction texte fiable.
     """
     blocks = page.get_text("dict")["blocks"]
     text_blocks = [b for b in blocks if b["type"] == 0]
     img_blocks = [b for b in blocks if b["type"] == 1]
 
-    # Image significative → vision obligatoire (schéma, photo, graphique)
-    for b in img_blocks:
-        w = b["bbox"][2] - b["bbox"][0]
-        h = b["bbox"][3] - b["bbox"][1]
-        if w > _SIGNIFICANT_IMAGE_SIZE and h > _SIGNIFICANT_IMAGE_SIZE:
-            return "vision"
+    # Détecter les images significatives (pas des icônes ni décorations)
+    significant_imgs = [
+        b for b in img_blocks
+        if (b["bbox"][2] - b["bbox"][0]) > _SIGNIFICANT_IMAGE_SIZE
+        and (b["bbox"][3] - b["bbox"][1]) > _SIGNIFICANT_IMAGE_SIZE
+    ]
+
+    if significant_imgs:
+        if len(text_blocks) >= _HYBRID_TEXT_THRESHOLD:
+            # Si les blocs texte sont courts et fragmentés, distinguer deux cas :
+            # – Labels d'un schéma multi-éléments (flowchart avec flèches, boîtes graphiques)
+            #   → nombreuses petites images (≥ _DIAGRAM_MIN_IMAGES). Envoyer en vision pour
+            #   que le modèle voie la mise en page globale.
+            # – Page instruction + capture(s) d'écran (1–3 images)
+            #   → garder en hybride : PyMuPDF extrait le texte, describe_image() décrit
+            #   chaque image brièvement. Élimine les hallucinations et listes de menus.
+            if (
+                _is_diagram_layout(text_blocks, page.rect.width)
+                and len(significant_imgs) >= _DIAGRAM_MIN_IMAGES
+            ):
+                return "vision"
+            # Page mixte : texte extractible + image(s) embarquée(s).
+            return "hybrid"
+        # Peu de texte autour de l'image : c'est l'image qui porte l'information
+        # (schéma, organigramme pleine page) → vision pleine page.
+        return "vision"
 
     # Trop de blocs = mise en page fragmentée (schéma, formulaire multi-zones)
     if len(text_blocks) > _VISION_BLOCK_THRESHOLD:
@@ -397,6 +506,11 @@ def _classify_page(page: fitz.Page) -> str:
         tables = []
 
     if tables and _has_meaningful_tables(tables):
+        # Tableaux avec double-en-têtes ou sous-en-têtes complexes :
+        # find_tables() gère mal ces structures (cellules fusionnées, sous-titres de colonnes).
+        # Laisser le modèle voir la page visuellement pour une meilleure fidélité.
+        if _tables_have_complex_headers(tables):
+            return "vision"
         if len(text_blocks) <= _TABLE_BLOCK_THRESHOLD:
             return "table"
         else:
@@ -412,13 +526,180 @@ def _classify_page(page: fitz.Page) -> str:
     return "vision"
 
 
-# ── Rendu page ────────────────────────────────────────────────────────────────
+# ── Rendu page et régions ──────────────────────────────────────────────────────
 
 def _render_page(page: fitz.Page) -> Image.Image:
-    """Rend une page PDF en image PIL à RENDER_DPI."""
+    """Rend une page PDF entière en image PIL à RENDER_DPI."""
     mat = fitz.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def _crop_page_region(page: fitz.Page, bbox: tuple) -> Image.Image:
+    """
+    Rend une région rectangulaire d'une page PDF en image PIL à RENDER_DPI.
+    Utilisé en mode hybride pour extraire chaque image individuellement.
+    """
+    rect = fitz.Rect(bbox)
+    mat = fitz.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
+    pix = page.get_pixmap(matrix=mat, clip=rect, colorspace=fitz.csRGB)
+    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+# ── Mode hybride ───────────────────────────────────────────────────────────────
+
+def _join_word_fragments(
+    items: list[tuple[float, str]], body_size: float
+) -> list[tuple[float, str]]:
+    """
+    Fusionne les fragments texte très courts consécutifs en mode hybride.
+
+    Certains PDFs (issus de PowerPoint avec positionnement absolu mot par mot)
+    créent un bloc PyMuPDF distinct par mot. Chaque mot devient alors un paragraphe
+    isolé dans la sortie Markdown.
+
+    Cette fonction effectue deux passes :
+    - Passe 1 : réunit les séquences de fragments ≤ 2 mots (blocs consécutifs
+      séparés par un écart vertical ≤ 3,5 × taille du corps de texte).
+    - Passe 2 : rattache un court fragment final (≤ 2 mots) au texte long qui
+      le précède immédiatement (ex. "(double clic)." après sa phrase principale).
+
+    Titres (lignes commençant par #), images (lignes commençant par *)
+    et items vides ne sont jamais fusionnés.
+    """
+    if len(items) < 2:
+        return items
+
+    y_gap_limit = body_size * 3.5  # ~3 interlignages
+
+    # ── Passe 1 : fusionner les séquences de fragments courts ─────────────────
+    pass1: list[tuple[float, str]] = []
+    buf_y0: float = 0.0   # y0 du premier fragment du groupe (positionnement)
+    last_y0: float = 0.0  # y0 du dernier fragment ajouté (contrôle du gap)
+    buf_parts: list[str] = []
+
+    def _flush_buf() -> None:
+        if buf_parts:
+            pass1.append((buf_y0, f"\n{' '.join(buf_parts)}\n"))
+
+    for y0, content in items:
+        stripped = content.strip()
+
+        # Éléments non fusionnables : titres (#), images (*), vides
+        if not stripped or stripped.startswith("#") or stripped.startswith("*"):
+            _flush_buf()
+            buf_parts = []
+            pass1.append((y0, content))
+            continue
+
+        word_count = len(stripped.split())
+
+        if word_count <= 2:
+            if buf_parts:
+                if y0 - last_y0 <= y_gap_limit:
+                    buf_parts.append(stripped)
+                    last_y0 = y0
+                else:
+                    # Écart trop grand : nouveau groupe
+                    _flush_buf()
+                    buf_parts = [stripped]
+                    buf_y0 = y0
+                    last_y0 = y0
+            else:
+                buf_parts = [stripped]
+                buf_y0 = y0
+                last_y0 = y0
+        else:
+            # Texte substantiel : vider le tampon et ajouter directement
+            _flush_buf()
+            buf_parts = []
+            pass1.append((y0, content))
+
+    _flush_buf()
+
+    # ── Passe 2 : rattacher les courts fragments finaux au texte précédent ─────
+    # Ex. "(double clic)." séparé de "Puis, sélectionner l'année en cours"
+    _BULLET_CHARS = {'▪', '•', '◦', '●', '–', '—'}
+    pass2: list[tuple[float, str]] = []
+
+    for y0, content in pass1:
+        stripped = content.strip()
+
+        is_short_appendable = (
+            stripped
+            and not stripped.startswith("#")
+            and not stripped.startswith("*")
+            and len(stripped.split()) <= 2
+            and stripped[0] not in _BULLET_CHARS
+        )
+
+        if is_short_appendable and pass2:
+            prev_y0, prev_content = pass2[-1]
+            prev_stripped = prev_content.strip()
+            is_prev_long_text = (
+                prev_stripped
+                and not prev_stripped.startswith("#")
+                and not prev_stripped.startswith("*")
+                and len(prev_stripped.split()) > 2
+            )
+            if is_prev_long_text and (y0 - prev_y0) <= y_gap_limit:
+                pass2[-1] = (prev_y0, f"\n{prev_stripped} {stripped}\n")
+                continue
+
+        pass2.append((y0, content))
+
+    return pass2
+
+
+def _page_to_hybrid_markdown(
+    page: fitz.Page,
+    body_size: float,
+    vision_model: str,
+) -> str:
+    """
+    Mode hybride : texte extrait par PyMuPDF + images décrites individuellement.
+
+    Pourquoi ce mode ?
+    ------------------
+    En mode vision pleine page, le modèle voit le texte ET les images simultanément.
+    Sur les pages "instructions + captures d'écran" (typiques des guides logiciel),
+    il peut :
+      - lister le contenu visible dans une capture d'écran (boucle d'hallucination)
+      - inventer des données dans un tableau affiché à l'écran
+      - reformuler le texte au lieu de le reproduire fidèlement
+
+    En mode hybride :
+      - Le texte est extrait mot pour mot par PyMuPDF (fiable, sans interprétation)
+      - Chaque image est envoyée seule au modèle avec un prompt focalisé
+      - Le modèle n'a pas de contexte textuel qui pourrait le "contaminer"
+    """
+    blocks = page.get_text("dict")["blocks"]
+    items: list[tuple[float, str]] = []
+
+    for block in blocks:
+        y0 = block["bbox"][1]
+
+        if block["type"] == 0:  # Bloc texte → extraction directe PyMuPDF
+            md = _block_to_markdown(block, body_size)
+            if md:
+                items.append((y0, md))
+
+        elif block["type"] == 1:  # Bloc image → description par le modèle
+            w = block["bbox"][2] - block["bbox"][0]
+            h = block["bbox"][3] - block["bbox"][1]
+            if w <= _SIGNIFICANT_IMAGE_SIZE or h <= _SIGNIFICANT_IMAGE_SIZE:
+                continue  # Icône ou décoration → ignorer
+            try:
+                img = _crop_page_region(page, block["bbox"])
+                description = describe_image(img, vision_model)
+                if description:
+                    items.append((y0, f"\n{description}\n"))
+            except Exception as e:
+                items.append((y0, f"\n*(image — non décrite : {type(e).__name__})*\n"))
+
+    items.sort(key=lambda x: x[0])
+    items = _join_word_fragments(items, body_size)
+    return "".join(content for _, content in items)
 
 
 # ── Point d'entrée principal ──────────────────────────────────────────────────
@@ -448,7 +729,7 @@ def parse_pdf(
     page_sections: list[str] = []
 
     # Compteurs pour le résumé final
-    counts = {"text": 0, "table": 0, "vision": 0}
+    counts = {"text": 0, "table": 0, "vision": 0, "hybrid": 0}
 
     for page_num, page in enumerate(doc):
         if verbose:
@@ -464,18 +745,30 @@ def parse_pdf(
 
             if mode == "vision":
                 img = _render_page(page)
-                md = transcribe_page(img, vision_model)
-                tag = "[vision]"
+                try:
+                    md = transcribe_page(img, vision_model)
+                except requests.exceptions.ReadTimeout:
+                    # Relance avec image plus petite (encodage ~55 % plus rapide)
+                    if verbose:
+                        print(f"timeout → relance {_RETRY_IMAGE_SIZE}px … ", end="", flush=True)
+                    md = transcribe_page(img, vision_model, max_image_size=_RETRY_IMAGE_SIZE)
+                tag = "[vision] "
+            elif mode == "hybrid":
+                md = _page_to_hybrid_markdown(page, body_size, vision_model)
+                tag = "[hybride]"
             elif mode == "table":
                 md = _page_to_table_markdown(page, body_size)
                 tag = "[tableau]"
             else:
                 md = _page_to_text_markdown(page, body_size)
-                tag = "[texte] "
+                tag = "[texte]  "
 
         except Exception as e:
             if verbose:
                 print(f"erreur — {e}")
+            page_sections.append(
+                f"> *(Page {page_num + 1} — non transcrite : {type(e).__name__})*"
+            )
             continue
 
         md = md.strip()
@@ -490,9 +783,10 @@ def parse_pdf(
         print(
             f"\n  ── Bilan traitement ──────────────────────────────\n"
             f"  Vision  : {counts['vision']:3d} page(s)  "
+            f"  Hybride : {counts['hybrid']:3d} page(s)  "
             f"  Tableau : {counts['table']:3d} page(s)  "
             f"  Texte   : {counts['text']:3d} page(s)\n"
-            f"  Appels modèle évités : {counts['table'] + counts['text']}/{total}"
+            f"  Appels modèle évités (texte+tableau) : {counts['table'] + counts['text']}/{total}"
         )
 
     doc.close()
