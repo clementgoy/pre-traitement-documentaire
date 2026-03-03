@@ -2,8 +2,9 @@
 
 Outil de conversion **PDF / DOCX / PPTX → Markdown** via un modèle de vision local (Ollama).
 
-Pour les PDF et PPTX, chaque **page entière** est analysée visuellement par le modèle :
-tableaux, schémas avec flèches, organigrammes, mises en page multi-colonnes sont
+Pour les PDF et PPTX, un classificateur automatique analyse chaque page et choisit le
+mode de traitement optimal : extraction texte pure, détection de tableaux, ou analyse
+visuelle complète. Tableaux, schémas, organigrammes et mises en page complexes sont
 retranscrits fidèlement en Markdown structuré. Les éléments décoratifs (logos, photos)
 sont ignorés. Pour les DOCX, la structure native (styles Word, tableaux) est utilisée.
 
@@ -151,20 +152,22 @@ le mode de traitement optimal :
 
 | Mode | Déclenchement | Traitement |
 |---|---|---|
-| **vision** | Schémas, images significatives, mise en page complexe (>25 blocs) | Rendu image 150 DPI → `qwen2.5vl` |
+| **vision** | Schémas, infographies, mise en page complexe (>20 blocs), images avec texte superposé | Rendu page 150 DPI → `qwen2.5vl` (1024 px, 3000 tokens) |
+| **hybride** | Page mixant texte extractible et images secondaires (captures d'écran, icônes) | Texte extrait par PyMuPDF + images décrites individuellement (512 px) |
 | **tableau** | Tableaux structurés détectés (≥2 lignes×colonnes), page simple | `find_tables()` PyMuPDF → GFM |
 | **texte** | Pages simples sans tableau ni image significative | Extraction blocs PyMuPDF |
 
-Sur un document typique de commande publique (75 pages), le classificateur évite
-en moyenne **25-30% des appels au modèle** sans perte de qualité.
+Le mode **hybride** combine le meilleur des deux approches : le texte est reproduit mot
+pour mot (sans hallucination), et les images embarquées sont décrites individuellement.
+Il est préféré au mode vision quand du texte extractible coexiste avec des captures d'écran.
 
-Le mode **vision** (le plus fidèle) couvre :
-- Tableaux, schémas de processus, flowcharts, organigrammes
-- Mises en page multi-colonnes complexes
-- Illustrations / exemples → mentionnés brièvement, décoratif ignoré
+Le mode **vision** (le plus fidèle visuellement) couvre :
+- Schémas de processus, flowcharts, organigrammes
+- Infographies à étapes numérotées, mises en page multi-zones
+- Pages denses ou à fort nombre de blocs texte
 
-Paramètres du mode vision : image 768 px (compact, rapide), 2048 tokens max
-(pas de troncature sur les pages denses). En cas de timeout, relance automatique à 512 px.
+Sur un document typique, le classificateur évite en moyenne **25-30% des appels au modèle**
+sans perte de qualité. En cas de timeout, relance automatique à 512 px.
 
 ### PPTX (mode vision)
 
@@ -299,8 +302,8 @@ Erreur : Ollama n'est pas accessible sur http://localhost:11434
 erreur — HTTPConnectionPool(host='localhost', port=11434): Read timed out. (read timeout=600)
 ```
 → Le modèle n'a pas répondu dans les 600 s allouées à l'encodage de l'image.
-Le pipeline relance automatiquement la page en résolution réduite (512 px au lieu de 768 px),
-ce qui accélère l'encodage d'environ 55 %.
+Le pipeline relance automatiquement la page en résolution réduite (512 px au lieu de 1024 px),
+ce qui accélère l'encodage d'environ 75 %.
 
 Si le retry échoue aussi, la page est marquée dans le Markdown :
 `> *(Page X — non transcrite : ReadTimeout)*`

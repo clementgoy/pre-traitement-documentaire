@@ -50,6 +50,9 @@ Reproduire chaque paragraphe, point de liste et phrase dans son intégralité et
 l'ordre de lecture exact.
 Pour une mise en page en deux colonnes : traiter la colonne gauche de haut en bas, \
 puis la colonne droite.
+Deux listes à puces présentées côte à côte (deux colonnes parallèles de points ou \
+de coches) ne forment pas un tableau de données : les transcrire comme deux listes \
+indépendantes, l'une après l'autre, chacune précédée de son propre titre.
 
 TABLEAUX
 Qu'il s'agisse d'un tableau structuré dans le document ou de données tabulaires rendues \
@@ -70,6 +73,26 @@ Décrire précisément en français :
 - La hiérarchie, la séquence ou le flux complet représenté.
 Utiliser des étapes numérotées pour les flux de processus, des listes à puces \
 pour les hiérarchies et organigrammes.
+
+CAS PARTICULIER — LOGIGRAMME SWIMLANE (colonnes ou lignes par acteur) :
+Les colonnes représentent des acteurs ou services — les cellules contiennent des formes \
+graphiques, pas du texte tabulaire. NE PAS reproduire comme un tableau avec des cellules \
+vides (| | | | |). Décrire le flux en liste numérotée dans l'ordre chronologique : \
+« 1. [Acteur] — [Action] ». Inclure les branchements (condition Oui/Non, boucles).
+
+CAS PARTICULIER — PAGE MULTI-ZONES NUMÉROTÉES (infographie à étapes) :
+Si la page présente des zones visuellement distinctes portant chacune un numéro d'étape \
+visible (ex. « Étape 01. », « 02. », « Step 3 »), traiter chaque zone de façon \
+indépendante et exhaustive dans l'ordre numérique : reproduire le numéro, le titre \
+de la zone et l'intégralité de son contenu avant de passer à la zone suivante. \
+Ne jamais mélanger le contenu de deux zones différentes.
+
+CAS PARTICULIER — FRISE CHRONOLOGIQUE ET PROCESSUS EN SÉQUENCE :
+Une frise affiche des étapes ordonnées (gauche→droite ou haut→bas), reliées par des \
+flèches, parfois avec des sous-étapes et des numéros originaux. \
+Reproduire impérativement dans l'ordre exact, en liste numérotée, en conservant les \
+numéros d'étapes originaux : « 1. [Étape] / - [Sous-étape A] / - [Sous-étape B] ». \
+Ne jamais inverser ni omettre une étape ou une sous-étape.
 
 GRAPHIQUES IMPRIMÉS (courbe, histogramme, camembert)
 Ces éléments sont des graphiques sur papier, pas des interfaces logicielles.
@@ -122,6 +145,8 @@ Représentation graphique d'une hiérarchie, d'un flux ou d'un processus — \
 Règle : décrire tous les libellés visibles, toutes les flèches (sens + relation exprimée), \
 toute la hiérarchie ou séquence complète.
 Étapes numérotées pour les flux de processus. Listes à puces pour les arborescences.
+Pour un logigramme swimlane (colonnes par acteur) : ne pas reproduire en tableau vide — \
+décrire le flux en liste numérotée « 1. [Acteur] — [Action] ».
 
 --- GRAPHIQUE (courbe, histogramme, camembert) ---
 Règle : décrire les axes, les légendes et les tendances principales.
@@ -137,8 +162,9 @@ Règle : ne rien écrire — sortie vide.
 PAGE_MAX_IMAGE_SIZE = 1024
 
 # Tokens max en mode vision pleine page.
-# 2048 couvre les pages denses sans troncature silencieuse.
-PAGE_MAX_TOKENS = 2048
+# 3000 couvre les pages denses et les schémas complexes sans troncature silencieuse.
+# Valeur augmentée depuis 2048 pour éviter les cases manquantes en fin de schéma.
+PAGE_MAX_TOKENS = 3000
 
 # ── Paramètres image isolée ────────────────────────────────────────────────────
 
@@ -150,6 +176,50 @@ IMAGE_MAX_SIZE = 512
 # Tokens max pour la description d'une image isolée.
 # 800 couvre une description détaillée d'organigramme sans excès.
 IMAGE_MAX_TOKENS = 800
+
+
+_EMPTY_TABLE_ROW_RE = re.compile(r"^\s*\|(\s*\|)+\s*$")
+
+
+def _remove_repeated_empty_rows(text: str) -> str:
+    """
+    Supprime les séquences de lignes de tableau vides répétées.
+
+    Symptôme caractéristique d'un logigramme swimlane mal transcrit :
+    le modèle génère l'en-tête de tableau (colonnes = acteurs/services) puis
+    des dizaines de lignes « | | | | | » correspondant aux formes graphiques
+    qu'il ne peut pas lire.
+
+    Règle : si ≥ 3 lignes consécutives sont vides (uniquement | et espaces),
+    on conserve les 2 premières (en-tête + séparateur légitimes) et on remplace
+    la suite par une note indiquant que le contenu est un schéma non transcriptible.
+    """
+    lines = text.split("\n")
+    result: list[str] = []
+    empty_run: list[str] = []
+
+    def flush_run() -> None:
+        if not empty_run:
+            return
+        if len(empty_run) <= 2:
+            result.extend(empty_run)
+        else:
+            result.extend(empty_run[:2])
+            result.append(
+                "\n> *(Logigramme ou diagramme complexe — "
+                "contenu graphique non transcriptible en tableau)*\n"
+            )
+        empty_run.clear()
+
+    for line in lines:
+        if _EMPTY_TABLE_ROW_RE.match(line):
+            empty_run.append(line)
+        else:
+            flush_run()
+            result.append(line)
+
+    flush_run()
+    return "\n".join(result)
 
 
 def _strip_code_block(text: str) -> str:
@@ -244,7 +314,8 @@ def transcribe_page(
         max_image_size=max_image_size,
         max_tokens=PAGE_MAX_TOKENS,
     )
-    return _strip_code_block(result)
+    result = _strip_code_block(result)
+    return _remove_repeated_empty_rows(result)
 
 
 def describe_image(image: Image.Image, model: str) -> str:

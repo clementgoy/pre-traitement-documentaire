@@ -92,8 +92,16 @@ et décide du traitement adapté :
   - Mode "tableau" : la page contient des tableaux structurés détectables, sans schéma.
                      PyMuPDF détecte et formate les tableaux en Markdown GFM. Pas de modèle.
 
-  - Mode "vision"  : la page est complexe (schéma, organigramme, mise en page fragmentée,
-                     image significative). La page est rendue en image et envoyée au modèle.
+  - Mode "hybride" : la page mélange du texte extractible et des images secondaires
+                     (captures d'écran de logiciels, icônes). Le texte est extrait mot
+                     pour mot par PyMuPDF ; chaque image est envoyée seule au modèle avec
+                     un prompt focalisé. Avantage : pas d'hallucination sur les interfaces
+                     logicielles, et le texte est reproduit fidèlement sans interprétation.
+
+  - Mode "vision"  : la page est visuellement complexe (schéma, organigramme, infographie
+                     à étapes, mise en page multi-zones, grand nombre de blocs texte ou
+                     image de fond avec texte superposé). La page entière est rendue en
+                     image et envoyée au modèle pour une transcription globale.
 
 Sur un document typique, le classificateur évite environ 25 à 30 % des appels au modèle
 sans aucune perte de qualité. Sur un document long, ça peut représenter plusieurs minutes
@@ -158,9 +166,9 @@ les pages les plus complexes.
 --- Retry automatique à résolution réduite ---
 
 Si le timeout se déclenche quand même (encodage de l'image > 600 secondes), le pipeline
-relance automatiquement la page avec une image plus petite : 512 pixels au lieu de 768.
-Une image de 512 pixels représente environ 44 % des pixels d'une image de 768 pixels.
-L'encodage est donc significativement plus rapide, au prix d'une légère perte de finesse
+relance automatiquement la page avec une image plus petite : 512 pixels au lieu de 1024.
+Une image de 512 pixels représente environ 25 % des pixels d'une image de 1024 pixels.
+L'encodage est donc nettement plus rapide, au prix d'une légère perte de finesse
 sur les textes très petits. Dans la grande majorité des cas, c'est suffisant pour capturer
 l'intégralité de l'information.
 

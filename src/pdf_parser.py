@@ -432,6 +432,61 @@ def _tables_have_complex_headers(tables: list) -> bool:
     return False
 
 
+def _has_overlapping_text_and_images(
+    text_blocks: list,
+    img_blocks: list,
+    page_rect,
+) -> bool:
+    """
+    Retourne True si au moins une image couvrant > 15 % de la page contient
+    au moins 2 blocs texte (centre du bloc dans la bbox de l'image).
+
+    Signale une page de type « mise en page visuelle » : grande photo de fond
+    avec des encadrés de texte PDF superposés (checklists, infographies décorées).
+    En mode hybride, cela génère du contenu dupliqué — la même information
+    apparaît à la fois dans la description de l'image et dans l'extraction texte
+    PyMuPDF. Le mode vision pleine page est préférable pour lire la structure globale
+    sans duplication.
+    """
+    page_area = page_rect.width * page_rect.height
+    for img_b in img_blocks:
+        ix0, iy0, ix1, iy1 = img_b["bbox"]
+        img_area = (ix1 - ix0) * (iy1 - iy0)
+
+        # Ignorer les petites images (< 15 % de la surface de page)
+        if img_area / page_area < 0.15:
+            continue
+
+        # Compter les blocs texte dont le centre se trouve dans la bbox de l'image
+        n_overlap = sum(
+            1
+            for tb in text_blocks
+            if ix0 <= (tb["bbox"][0] + tb["bbox"][2]) / 2 <= ix1
+            and iy0 <= (tb["bbox"][1] + tb["bbox"][3]) / 2 <= iy1
+        )
+
+        if n_overlap >= 2:
+            return True
+    return False
+
+
+def _images_in_same_band(img_blocks: list, page_height: float) -> bool:
+    """
+    Retourne True si au moins 3 images significatives sont dans la même bande
+    verticale (même rangée horizontale, hauteur < 40 % de la page).
+
+    Signal : mise en page de type « grille d'icônes » ou « vignettes » où
+    plusieurs illustrations de même taille sont alignées côte à côte.
+    Dans ce cas le mode hybride fragmente les textes de légende ; la vision
+    pleine page permet au modèle de comprendre la mise en page de groupe.
+    """
+    if len(img_blocks) < 3:
+        return False
+    y0s = [b["bbox"][1] for b in img_blocks]
+    y1s = [b["bbox"][3] for b in img_blocks]
+    return (max(y1s) - min(y0s)) < page_height * 0.40
+
+
 def _classify_page(page: fitz.Page) -> str:
     """
     Analyse rapide (sans LLM) pour choisir le mode de traitement d'une page.
@@ -462,19 +517,38 @@ def _classify_page(page: fitz.Page) -> str:
 
     if significant_imgs:
         if len(text_blocks) >= _HYBRID_TEXT_THRESHOLD:
-            # Si les blocs texte sont courts et fragmentés, distinguer deux cas :
-            # – Labels d'un schéma multi-éléments (flowchart avec flèches, boîtes graphiques)
-            #   → nombreuses petites images (≥ _DIAGRAM_MIN_IMAGES). Envoyer en vision pour
-            #   que le modèle voie la mise en page globale.
-            # – Page instruction + capture(s) d'écran (1–3 images)
-            #   → garder en hybride : PyMuPDF extrait le texte, describe_image() décrit
-            #   chaque image brièvement. Élimine les hallucinations et listes de menus.
+            # Cas 1 : beaucoup de blocs texte même avec des images → mise en page
+            # complexe (infographie multi-zones, layout fragmenté avec photo).
+            # Sans ce contrôle, le seuil _VISION_BLOCK_THRESHOLD est court-circuité
+            # dès qu'une image est présente, forçant le mode hybride même sur des
+            # pages à 30+ blocs texte.
+            if len(text_blocks) > _VISION_BLOCK_THRESHOLD:
+                return "vision"
+
+            # Cas 2 : grande image dont la bbox contient des blocs texte PDF.
+            # Typique des pages avec photo de fond + encadrés checklists superposés :
+            # le mode hybride génère du contenu en double (image décrite + même
+            # texte extrait). La vision pleine page évite cette duplication.
+            if _has_overlapping_text_and_images(text_blocks, significant_imgs, page.rect):
+                return "vision"
+
+            # Cas 3 : plusieurs images alignées horizontalement (grille d'icônes /
+            # vignettes). Le mode hybride fragmente les légendes ; la vision permet
+            # au modèle de lire l'ensemble de la mise en page.
+            if _images_in_same_band(significant_imgs, page.rect.height):
+                return "vision"
+
+            # Cas 4 : labels courts d'un schéma multi-éléments (flowchart).
+            # Nombreuses petites images (≥ _DIAGRAM_MIN_IMAGES) avec du texte bref
+            # → envoyer en vision pour que le modèle voie la mise en page globale.
             if (
                 _is_diagram_layout(text_blocks, page.rect.width)
                 and len(significant_imgs) >= _DIAGRAM_MIN_IMAGES
             ):
                 return "vision"
-            # Page mixte : texte extractible + image(s) embarquée(s).
+
+            # Cas standard : texte extractible + capture(s) d'écran sans chevauchement.
+            # PyMuPDF extrait le texte mot pour mot ; le modèle ne voit que les images.
             return "hybrid"
         # Peu de texte autour de l'image : c'est l'image qui porte l'information
         # (schéma, organigramme pleine page) → vision pleine page.
