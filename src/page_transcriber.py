@@ -39,7 +39,13 @@ RÈGLES FONDAMENTALES
 - Interdit absolument : encapsuler la sortie dans un bloc de code (pas de ```markdown, \
 pas de ```, pas de ~~~).
 - Langue : français.
-- Exclure : numéros de page, en-têtes courants, pieds de page, filigranes.
+- Exclure uniquement : numéros de page isolés (ex. « 3 », « 42 »), textes identiques \
+répétés en tête ou pied de chaque page (pagination de document type « Guide des achats — \
+Département de la Haute-Savoie »), mentions purement légales ou administratives répétitives \
+(ex. « CONFIDENTIEL – NE PAS DIFFUSER »), filigranes.
+- Inclure impérativement : toute description, sous-titre ou contenu visible dans un bandeau \
+ou encadré coloré en haut d'une page — ce n'est pas un en-tête courant si le texte est \
+spécifique à cette page.
 
 TITRES
 Déduire le niveau de titre (##, ###, ####) de la taille, la graisse et la position du texte.
@@ -63,14 +69,24 @@ Pour les tableaux à double en-tête (ex : ligne d'abréviations + ligne de noms
 reproduire les deux lignes séparément, chacune avec toutes ses cellules dans le bon ordre.
 Pour les cellules vides, laisser la cellule vide dans le tableau Markdown ( |  | ).
 Pour les cellules fusionnées, ajouter une courte note avant le tableau décrivant la structure.
+Dans le corps d'un tableau, toutes les lignes de données ont le même niveau : ne jamais \
+formater une valeur de cellule avec des titres (##, ###, ####). Si une cellule doit être \
+mise en valeur, utiliser le gras (**texte**) mais jamais un titre Markdown.
 
 SCHÉMAS, ORGANIGRAMMES, DIAGRAMMES DE PROCESSUS, FLOWCHARTS
 Ces éléments se distinguent des interfaces informatiques (ils n'ont pas de barre de titre \
 de fenêtre Windows, pas de menus d'application logicielle).
 Décrire précisément en français :
-- Chaque libellé, nom, rôle, code ou valeur visible.
+- Chaque libellé, nom, rôle, code ou valeur visible — y compris les cases en périphérie, \
+les petites boîtes annexes et les éléments en bas de schéma.
 - Chaque flèche : ce qu'elle relie, dans quel sens, quelle relation elle exprime.
 - La hiérarchie, la séquence ou le flux complet représenté.
+Être exhaustif : transcrire TOUTES les cases, boîtes et étiquettes visibles, \
+y compris les plus petites ou celles situées en bordure du schéma. \
+Ne pas s'arrêter avant d'avoir traité l'ensemble du schéma.
+Si une légende est présente (boîtes, symboles ou couleurs explicatifs en bas ou en marge \
+du schéma indiquant la signification des formes ou types de flèches), la retranscrire \
+intégralement sous forme de liste, précédée du titre **Légende :**.
 Utiliser des étapes numérotées pour les flux de processus, des listes à puces \
 pour les hiérarchies et organigrammes.
 
@@ -94,6 +110,16 @@ Reproduire impérativement dans l'ordre exact, en liste numérotée, en conserva
 numéros d'étapes originaux : « 1. [Étape] / - [Sous-étape A] / - [Sous-étape B] ». \
 Ne jamais inverser ni omettre une étape ou une sous-étape.
 
+CAS PARTICULIER — GRILLE DE RUBRIQUES EN BOÎTES (fiche de synthèse, résumé thématique) :
+Si la page présente des rubriques dans des boîtes, fiches ou encadrés colorés organisés \
+en grille ou en colonnes (ex. résumé réglementaire, fiche pratique, guide thématique) : \
+1. Avant toute retranscription, identifier TOUTES les boîtes visibles sur la page en \
+parcourant systématiquement de gauche à droite puis de haut en bas. \
+2. Deux boîtes placées côte à côte au même niveau vertical constituent DEUX rubriques \
+distinctes — les retranscrire TOUTES LES DEUX, sans en omettre une sous prétexte que \
+l'autre voisine a déjà été traitée. \
+3. Retranscrire ensuite chaque boîte dans cet ordre de lecture, sans en sauter aucune.
+
 GRAPHIQUES IMPRIMÉS (courbe, histogramme, camembert)
 Ces éléments sont des graphiques sur papier, pas des interfaces logicielles.
 Décrire les axes, les légendes et les tendances principales.
@@ -104,6 +130,9 @@ Une capture d'écran montre une fenêtre logicielle, un navigateur web, un explo
 de fichiers, un formulaire informatique, un menu applicatif, ou un tableau de bord numérique.
 Pour ce type d'élément, écrire uniquement cette ligne : \
 *(Capture d'écran : [description en une phrase de ce que montre l'interface])*
+Si un label court est visible au-dessus ou en titre de la capture (ex. « Exemple », \
+« Exemple 1 », « Exemple : »), l'inclure dans la description : \
+*(Capture d'écran — Exemple : [description en une phrase])*
 Ne pas lister les fichiers, éléments ou données visibles dans la capture.
 Ne pas inventer de contenu.
 
@@ -180,6 +209,11 @@ IMAGE_MAX_TOKENS = 800
 
 _EMPTY_TABLE_ROW_RE = re.compile(r"^\s*\|(\s*\|)+\s*$")
 
+# Cellule de tableau contenant uniquement des tirets répétés (≥ 5) : artefact de génération.
+# Ex. : "| Clause contractuelle | ------------------------------ |"
+# Remplacer le contenu de la cellule par vide.
+_DASH_ONLY_CELL_RE = re.compile(r"(?<=\|)\s*-{5,}\s*(?=\|)")
+
 
 def _remove_repeated_empty_rows(text: str) -> str:
     """
@@ -220,6 +254,20 @@ def _remove_repeated_empty_rows(text: str) -> str:
 
     flush_run()
     return "\n".join(result)
+
+
+def _clean_dash_cells(text: str) -> str:
+    """
+    Nettoie les cellules de tableau contenant uniquement des tirets répétés (artefact).
+
+    Symptôme : le modèle remplit une cellule avec une longue chaîne de tirets
+    (ex. « ------------------------------ ») lorsqu'il ne peut pas lire le contenu
+    d'une cellule fusionnée ou d'une structure trop complexe.
+
+    Règle : si une cellule contient ≥ 5 tirets consécutifs et rien d'autre,
+    son contenu est remplacé par une cellule vide.
+    """
+    return _DASH_ONLY_CELL_RE.sub("  ", text)
 
 
 def _strip_code_block(text: str) -> str:
@@ -315,6 +363,7 @@ def transcribe_page(
         max_tokens=PAGE_MAX_TOKENS,
     )
     result = _strip_code_block(result)
+    result = _clean_dash_cells(result)
     return _remove_repeated_empty_rows(result)
 
 
