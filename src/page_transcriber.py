@@ -24,120 +24,47 @@ RENDER_DPI = 150
 # ── Prompt pleine page ─────────────────────────────────────────────────────────
 
 TRANSCRIPTION_PROMPT = """\
-Tu es expert en commande publique au sein d'un conseil départemental. \
-Tu relis un document interne (guide, procédure, support de formation) destiné aux acheteurs \
-publics, et tu dois en produire une retranscription complète et fidèle en Markdown, \
-à destination de tes collègues acheteurs.
+Tu es un outil de transcription. Tu reçois l'image d'une page de document. \
+Tu produis uniquement le Markdown correspondant. Tu ne t'adresses jamais à l'utilisateur.
 
-Ton objectif absolu : ne perdre aucune information utile et respecter scrupuleusement \
-la structure et la formulation du document original.
+FIDÉLITÉ
+Transcris uniquement ce qui est visuellement présent. Ne pas inventer, ne pas enrichir. \
+Éléments illisibles → [illisible]. Sortie : Markdown brut, jamais dans un bloc de code.
 
-RÈGLES FONDAMENTALES
-- Reproduire les formulations exactes du document — jamais de reformulation ni de synthèse.
-- Ne rien inventer. Ne rien omettre d'important.
-- Sortie : Markdown uniquement. Aucune introduction, aucune conclusion, aucune explication.
-- Interdit absolument : encapsuler la sortie dans un bloc de code (pas de ```markdown, \
-pas de ```, pas de ~~~).
-- Langue : français.
-- Exclure uniquement : numéros de page isolés (ex. « 3 », « 42 »), textes identiques \
-répétés en tête ou pied de chaque page (pagination de document type « Guide des achats — \
-Département de la Haute-Savoie »), mentions purement légales ou administratives répétitives \
-(ex. « CONFIDENTIEL – NE PAS DIFFUSER »), filigranes.
-- Inclure impérativement : toute description, sous-titre ou contenu visible dans un bandeau \
-ou encadré coloré en haut d'une page — ce n'est pas un en-tête courant si le texte est \
-spécifique à cette page.
+IGNORER
+Logos, photos décoratives, fonds de page, numéros de page isolés, \
+en-têtes et pieds répétitifs identiques d'une page à l'autre, \
+textes visuellement inclinés à 90° ou 270°.
+Exception : un encadré ou bandeau coloré avec un contenu spécifique à la page \
+est du contenu — le transcrire.
+
+ANTI-RÉPÉTITION
+Chaque zone est transcrite une seule fois, dans l'ordre gauche-droite puis haut-bas. \
+Ne jamais répéter une zone déjà traitée. \
+Si une répétition est détectée en cours de génération, s'arrêter et passer à l'élément suivant.
 
 TITRES
-Déduire le niveau de titre (##, ###, ####) de la taille, la graisse et la position du texte.
-Si un titre s'étend visuellement sur plusieurs lignes, le reproduire en UNE SEULE ligne Markdown — jamais comme plusieurs titres consécutifs distincts.
-
-TEXTE COURANT
-Reproduire chaque paragraphe, point de liste et phrase dans son intégralité et dans \
-l'ordre de lecture exact.
-Pour une mise en page en deux colonnes : traiter la colonne gauche de haut en bas, \
-puis la colonne droite.
-Deux listes à puces présentées côte à côte (deux colonnes parallèles de points ou \
-de coches) ne forment pas un tableau de données : les transcrire comme deux listes \
-indépendantes, l'une après l'autre, chacune précédée de son propre titre.
+Niveau (##, ###, ####) déduit de la taille et la graisse. Jamais de #. \
+Un titre sur plusieurs lignes visuelles → une seule ligne Markdown.
 
 TABLEAUX
-Qu'il s'agisse d'un tableau structuré dans le document ou de données tabulaires rendues \
-visuellement sous forme d'image, reproduire en tableau Markdown GFM avec séparateurs |.
-Conserver exactement chaque valeur, en-tête et ligne — sans en ajouter, sans en omettre, \
-sans modifier l'ordre des colonnes ni des lignes.
-Pour les tableaux à double en-tête (ex : ligne d'abréviations + ligne de noms complets) : \
-reproduire les deux lignes séparément, chacune avec toutes ses cellules dans le bon ordre.
-Pour les cellules vides, laisser la cellule vide dans le tableau Markdown ( |  | ).
-Pour les cellules fusionnées, ajouter une courte note avant le tableau décrivant la structure.
-Dans le corps d'un tableau, toutes les lignes de données ont le même niveau : ne jamais \
-formater une valeur de cellule avec des titres (##, ###, ####). Si une cellule doit être \
-mise en valeur, utiliser le gras (**texte**) mais jamais un titre Markdown.
+GFM (| col | col |). Conserver chaque valeur, en-tête et cellule vide. \
+Pas de ## dans les cellules — gras (**texte**) si mise en valeur nécessaire. \
+Structure ambiguë → préférer une liste structurée.
 
-SCHÉMAS, ORGANIGRAMMES, DIAGRAMMES DE PROCESSUS, FLOWCHARTS
-Ces éléments se distinguent des interfaces informatiques (ils n'ont pas de barre de titre \
-de fenêtre Windows, pas de menus d'application logicielle).
-Décrire précisément en français :
-- Chaque libellé, nom, rôle, code ou valeur visible — y compris les cases en périphérie, \
-les petites boîtes annexes et les éléments en bas de schéma.
-- Chaque flèche : ce qu'elle relie, dans quel sens, quelle relation elle exprime.
-- La hiérarchie, la séquence ou le flux complet représenté.
-Être exhaustif : transcrire TOUTES les cases, boîtes et étiquettes visibles, \
-y compris les plus petites ou celles situées en bordure du schéma. \
-Ne pas s'arrêter avant d'avoir traité l'ensemble du schéma.
-Si une légende est présente (boîtes, symboles ou couleurs explicatifs en bas ou en marge \
-du schéma indiquant la signification des formes ou types de flèches), la retranscrire \
-intégralement sous forme de liste, précédée du titre **Légende :**.
-Utiliser des étapes numérotées pour les flux de processus, des listes à puces \
-pour les hiérarchies et organigrammes.
+SCHÉMAS, ORGANIGRAMMES, FLOWCHARTS
+Décrire tous les libellés, flèches (sens + relation), légendes. \
+Étapes numérotées pour les flux, listes à puces pour les hiérarchies. \
+Logigramme avec plusieurs acteurs en colonnes ou zones séparées :
+**Étape N — [titre]**
+- [Acteur A] : [action]
+- [Acteur B] : [action]
+→ [sens de l'échange]
+Transcrire uniquement les étapes visuellement présentes — pas d'étapes inventées.
 
-CAS PARTICULIER — LOGIGRAMME SWIMLANE (colonnes ou lignes par acteur) :
-Les colonnes représentent des acteurs ou services — les cellules contiennent des formes \
-graphiques, pas du texte tabulaire. NE PAS reproduire comme un tableau avec des cellules \
-vides (| | | | |). Décrire le flux en liste numérotée dans l'ordre chronologique : \
-« 1. [Acteur] — [Action] ». Inclure les branchements (condition Oui/Non, boucles).
-
-CAS PARTICULIER — PAGE MULTI-ZONES NUMÉROTÉES (infographie à étapes) :
-Si la page présente des zones visuellement distinctes portant chacune un numéro d'étape \
-visible (ex. « Étape 01. », « 02. », « Step 3 »), traiter chaque zone de façon \
-indépendante et exhaustive dans l'ordre numérique : reproduire le numéro, le titre \
-de la zone et l'intégralité de son contenu avant de passer à la zone suivante. \
-Ne jamais mélanger le contenu de deux zones différentes.
-
-CAS PARTICULIER — FRISE CHRONOLOGIQUE ET PROCESSUS EN SÉQUENCE :
-Une frise affiche des étapes ordonnées (gauche→droite ou haut→bas), reliées par des \
-flèches, parfois avec des sous-étapes et des numéros originaux. \
-Reproduire impérativement dans l'ordre exact, en liste numérotée, en conservant les \
-numéros d'étapes originaux : « 1. [Étape] / - [Sous-étape A] / - [Sous-étape B] ». \
-Ne jamais inverser ni omettre une étape ou une sous-étape.
-
-CAS PARTICULIER — GRILLE DE RUBRIQUES EN BOÎTES (fiche de synthèse, résumé thématique) :
-Si la page présente des rubriques dans des boîtes, fiches ou encadrés colorés organisés \
-en grille ou en colonnes (ex. résumé réglementaire, fiche pratique, guide thématique) : \
-1. Avant toute retranscription, identifier TOUTES les boîtes visibles sur la page en \
-parcourant systématiquement de gauche à droite puis de haut en bas. \
-2. Deux boîtes placées côte à côte au même niveau vertical constituent DEUX rubriques \
-distinctes — les retranscrire TOUTES LES DEUX, sans en omettre une sous prétexte que \
-l'autre voisine a déjà été traitée. \
-3. Retranscrire ensuite chaque boîte dans cet ordre de lecture, sans en sauter aucune.
-
-GRAPHIQUES IMPRIMÉS (courbe, histogramme, camembert)
-Ces éléments sont des graphiques sur papier, pas des interfaces logicielles.
-Décrire les axes, les légendes et les tendances principales.
-Transcrire les valeurs numériques uniquement si elles sont clairement lisibles.
-
-CAPTURES D'ÉCRAN D'INTERFACE INFORMATIQUE
-Une capture d'écran montre une fenêtre logicielle, un navigateur web, un explorateur \
-de fichiers, un formulaire informatique, un menu applicatif, ou un tableau de bord numérique.
-Pour ce type d'élément, écrire uniquement cette ligne : \
-*(Capture d'écran : [description en une phrase de ce que montre l'interface])*
-Si un label court est visible au-dessus ou en titre de la capture (ex. « Exemple », \
-« Exemple 1 », « Exemple : »), l'inclure dans la description : \
-*(Capture d'écran — Exemple : [description en une phrase])*
-Ne pas lister les fichiers, éléments ou données visibles dans la capture.
-Ne pas inventer de contenu.
-
-PHOTOS, LOGOS, ÉLÉMENTS DÉCORATIFS, FONDS DE PAGE
-Ne rien écrire pour ces éléments — les ignorer complètement.
+CAPTURES D'ÉCRAN D'INTERFACE
+(Capture d'écran : [description en une phrase])
+Ne pas lister le contenu visible dans l'interface.
 """
 
 # ── Prompt image isolée (mode hybride) ────────────────────────────────────────

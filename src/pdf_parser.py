@@ -1,7 +1,7 @@
 """
 Conversion de fichiers PDF en Markdown.
 
-Trois modes de traitement par page (choix automatique) :
+Quatre modes de traitement par page (choix automatique) :
 
   « texte »   — Extraction rapide via PyMuPDF.
                 Pages simples : peu de blocs, pas de tableau, pas d'image.
@@ -9,6 +9,11 @@ Trois modes de traitement par page (choix automatique) :
   « tableau » — PyMuPDF find_tables() + blocs texte hors tableaux.
                 Pages dont la complexité vient uniquement de tableaux détectables
                 structurellement (pas de schéma). Aucun appel au modèle.
+
+  « hybride » — Texte extrait par PyMuPDF + images décrites individuellement.
+                Pages mixant du texte extractible et des images secondaires
+                (captures d'écran, icônes). Élimine les hallucinations sur les
+                interfaces logicielles tout en reproduisant le texte fidèlement.
 
   « vision »  — Rendu de la page en image → modèle de vision → Markdown.
                 Pages complexes : schémas, organigrammes, mises en page
@@ -25,11 +30,17 @@ import fitz  # PyMuPDF
 import requests
 from PIL import Image
 
-from .page_transcriber import RENDER_DPI, describe_image, transcribe_page
+from .page_transcriber import PAGE_MAX_IMAGE_SIZE, RENDER_DPI, describe_image, transcribe_page
 
 # Résolution de repli en cas de timeout sur une page vision (pleine page).
 # 512 px réduit la surface de l'image d'environ 55 % par rapport à 768 px.
 _RETRY_IMAGE_SIZE = 512
+
+# Résolution haute définition pour les pages à forte densité visuelle.
+# Déclenchée quand img_blocks >= 3 ET (paysage ≥ 1.2× OU img_blocks >= 5).
+# Cible : organigrammes larges, logigrammes multi-colonnes, pages paysage.
+# Ne modifie pas le seuil de retry (_RETRY_IMAGE_SIZE reste à 512 px).
+_HIGH_RES_IMAGE_SIZE = 1536
 
 # Nombre minimum de blocs texte sur une page pour activer le mode hybride.
 # Si une page contient des images significatives ET >= ce seuil de blocs texte,
@@ -591,6 +602,12 @@ def _classify_page(page: fitz.Page) -> str:
             # Tableaux réels + beaucoup de blocs → schéma mêlé à des tableaux
             return "vision"
 
+    # Aucun texte extractible : le contenu est en vectoriel ou en image tiles
+    # (PDF de présentation, scan, export depuis PowerPoint…).
+    # PyMuPDF ne peut rien extraire → vision obligatoire.
+    if len(text_blocks) == 0:
+        return "vision"
+
     # Mode texte uniquement pour les pages véritablement simples :
     # peu de blocs, pas de dispersion horizontale notable.
     # Au-delà du seuil, préférer vision pour éviter les incohérences de retranscription.
@@ -618,6 +635,25 @@ def _crop_page_region(page: fitz.Page, bbox: tuple) -> Image.Image:
     mat = fitz.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
     pix = page.get_pixmap(matrix=mat, clip=rect, colorspace=fitz.csRGB)
     return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def _needs_high_res(page: fitz.Page) -> bool:
+    """
+    Retourne True si la page mérite un rendu à _HIGH_RES_IMAGE_SIZE (1536 px).
+
+    Critère : forte densité visuelle → organigrammes larges, pages de contacts
+    multi-colonnes, logigrammes avec beaucoup d'éléments graphiques.
+
+    Déclenchement : img_blocks >= 3 ET (largeur >= 1.2 × hauteur OU img_blocks >= 5).
+    - Condition paysage (1.2×) : logigramme ou organigramme étalé horizontalement.
+    - Condition img_blocks >= 5 : page dense quelle que soit son orientation.
+    """
+    blocks = page.get_text("dict")["blocks"]
+    img_count = sum(1 for b in blocks if b["type"] == 1)
+    if img_count < 3:
+        return False
+    w, h = page.rect.width, page.rect.height
+    return (h > 0 and w >= 1.2 * h) or img_count >= 5
 
 
 # ── Mode hybride ───────────────────────────────────────────────────────────────
@@ -819,8 +855,13 @@ def parse_pdf(
 
             if mode == "vision":
                 img = _render_page(page)
+                image_size = (
+                    _HIGH_RES_IMAGE_SIZE if _needs_high_res(page) else PAGE_MAX_IMAGE_SIZE
+                )
+                if verbose and image_size == _HIGH_RES_IMAGE_SIZE:
+                    print(f"1536px … ", end="", flush=True)
                 try:
-                    md = transcribe_page(img, vision_model)
+                    md = transcribe_page(img, vision_model, max_image_size=image_size)
                 except requests.exceptions.ReadTimeout:
                     # Relance avec image plus petite (encodage ~55 % plus rapide)
                     if verbose:
