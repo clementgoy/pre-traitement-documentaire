@@ -355,3 +355,9 @@ avec 21 Go de RAM et sans GPU dédié (CPU uniquement) :
 
 Utilisez `--no-images` pour des tests de mise en forme rapides.
 La conversion avec vision est longue mais produit un Markdown fidèle et exploitable par un LLM.
+
+---
+
+## Licence
+
+Distribué sous licence MIT. Voir le fichier `LICENSE`.
